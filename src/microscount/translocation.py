@@ -442,11 +442,18 @@ def analyse_field(
         bg = bg_mode
     t_val -= bg
 
-    # ---- paper metric (whole field)
-    nuc_roi = mask_n & measurable
-    cyto_roi = mask_t & ~mask_n & measurable
-    p_n = float(t_val[nuc_roi].mean()) if nuc_roi.any() else math.nan
-    p_c = float(t_val[cyto_roi].mean()) if cyto_roi.any() else math.nan
+    # ---- paper metric (whole field). In per-cell mode it is always computed exactly as
+    # published (raw intensities, no background subtraction, no saturation filter) so the
+    # "paper-method ratio" column means the same thing whichever method is selected.
+    if s.method == "per_cell":
+        paper_vals = t_raw.astype(np.float64)
+        paper_meas = valid & (t_raw > 0) if s.exclude_zero_pixels else valid
+    else:
+        paper_vals, paper_meas = t_val, measurable
+    nuc_roi = mask_n & paper_meas
+    cyto_roi = mask_t & ~mask_n & paper_meas
+    p_n = float(paper_vals[nuc_roi].mean()) if nuc_roi.any() else math.nan
+    p_c = float(paper_vals[cyto_roi].mean()) if cyto_roi.any() else math.nan
     paper_ratio = p_n / p_c if (p_c and math.isfinite(p_c) and p_c > 0) else math.nan
     lab_all, n_comp = ndi.label(mask_n)
     comp_areas = np.bincount(lab_all.ravel())[1:]
