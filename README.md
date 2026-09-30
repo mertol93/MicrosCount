@@ -171,7 +171,9 @@ pytest
 microscount            # opens the GUI
 ```
 
-Installers are built with PyInstaller by [`.github/workflows/build.yml`](.github/workflows/build.yml) on GitHub's Windows, macOS and Linux runners. Each frozen app runs its self-test before it is packaged. To build locally, run `packaging/build_windows.ps1`, `packaging/build_macos.sh` or `packaging/build_linux.sh`.
+Installers are built with PyInstaller by [`.github/workflows/build.yml`](.github/workflows/build.yml) on GitHub's Windows, macOS and Linux runners. Each frozen app runs its self-test and a headless GUI start before it is packaged. To build locally, run `packaging/build_windows.ps1`, `packaging/build_macos.sh` or `packaging/build_linux.sh`.
+
+**Releasing:** bump `__version__` in `src/microscount/_version.py` (and `version` in `CITATION.cff`), then push to `main`. CI tests the code, builds all installers and publishes release `v<version>` with the installers attached.
 
 ## Method references
 
