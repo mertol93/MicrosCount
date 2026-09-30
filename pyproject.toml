@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "microscount"
+dynamic = ["version"]
+description = "Open-source microscopy image analysis with a GUI: nuclear translocation (N/C ratio) in fluorescence images and porosity / pore-size distribution in SEM images"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "Mertol Tüfekci" }]
+requires-python = ">=3.10"
+keywords = ["microscopy", "image analysis", "nuclear translocation", "NF-kB", "SEM", "porosity", "ImageJ"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "scikit-image>=0.21",
+    "tifffile>=2023.1.23",
+    "imagecodecs>=2023.1.23",
+    "Pillow>=10.0",
+    "matplotlib>=3.7",
+    "PyYAML>=6.0",
+    "openpyxl>=3.1",
+    "pypng>=0.20220715",
+    "PySide6-Essentials>=6.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pyinstaller>=6.3"]
+
+[project.urls]
+Homepage = "https://github.com/mertol93/microscount"
+Issues = "https://github.com/mertol93/microscount/issues"
+Citation = "https://doi.org/10.1021/acsomega.4c03038"
+
+[project.scripts]
+microscount = "microscount.cli:main"
+
+[project.gui-scripts]
+microscount-gui = "microscount.gui.app:run_gui"
+
+[tool.setuptools.dynamic]
+version = { attr = "microscount._version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+microscount = ["gui/resources/*.png"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

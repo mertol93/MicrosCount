@@ -1,0 +1,93 @@
+cff-version: 1.2.0
+message: "If you use MicrosCount, please cite the article below (preferred citation) and the software."
+title: "MicrosCount: open-source microscopy image analysis"
+type: software
+authors:
+  - family-names: "Tüfekci"
+    given-names: "Mertol"
+version: "0.1.0"
+date-released: "2026-09-30"
+license: GPL-3.0-or-later
+repository-code: "https://github.com/mertol93/microscount"
+keywords:
+  - microscopy
+  - image analysis
+  - nuclear translocation
+  - NF-kB
+  - SEM
+  - porosity
+  - pore size distribution
+preferred-citation:
+  type: article
+  authors:
+    - family-names: "Acarer-Arat"
+      given-names: "Seren"
+    - family-names: "Pir"
+      given-names: "İnci"
+    - family-names: "Tüfekci"
+      given-names: "Mertol"
+    - family-names: "Güneş-Durak"
+      given-names: "Sevgi"
+    - family-names: "Akman"
+      given-names: "Alp"
+    - family-names: "Tüfekci"
+      given-names: "Neşe"
+  title: "Heavy Metal Rejection Performance and Mechanical Performance of Cellulose-Nanofibril-Reinforced Cellulose Acetate Membranes"
+  journal: "ACS Omega"
+  year: 2024
+  volume: 9
+  issue: 41
+  start: 42159
+  end: 42171
+  doi: "10.1021/acsomega.4c03038"
+references:
+  - type: article
+    authors:
+      - family-names: "Noursadeghi"
+        given-names: "Mahdad"
+      - family-names: "Tsang"
+        given-names: "Jhen"
+      - family-names: "Haustein"
+        given-names: "Thomas"
+      - family-names: "Miller"
+        given-names: "Robert F."
+      - family-names: "Chain"
+        given-names: "Benjamin M."
+      - family-names: "Katz"
+        given-names: "David R."
+    title: "Quantitative imaging assay for NF-κB nuclear translocation in primary human macrophages"
+    journal: "Journal of Immunological Methods"
+    year: 2008
+    volume: 329
+    start: 194
+    end: 200
+    doi: "10.1016/j.jim.2007.10.015"
+  - type: article
+    authors:
+      - family-names: "Rabbani"
+        given-names: "Arash"
+      - family-names: "Salehi"
+        given-names: "S."
+    title: "Dynamic modeling of the formation damage and mud cake deposition using filtration theories coupled with SEM image processing"
+    journal: "Journal of Natural Gas Science and Engineering"
+    year: 2017
+    volume: 42
+    start: 157
+    end: 168
+    doi: "10.1016/j.jngse.2017.02.047"
+  - type: conference-paper
+    authors:
+      - family-names: "Ezeakacha"
+        given-names: "C. P."
+      - family-names: "Rabbani"
+        given-names: "Arash"
+      - family-names: "Salehi"
+        given-names: "S."
+      - family-names: "Ghalambor"
+        given-names: "A."
+    title: "Integrated Image Processing and Computational Techniques to Characterize Formation Damage"
+    collection-title: "SPE International Conference and Exhibition on Formation Damage Control"
+    publisher:
+      name: "Society of Petroleum Engineers"
+    year: 2018
+    url: "https://onepetro.org/SPEFD/proceedings-abstract/18FD/1-18FD/D012S007R004/214874"

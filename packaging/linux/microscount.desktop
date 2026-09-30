@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=MicrosCount
+GenericName=Microscopy image analysis
+Comment=Nuclear translocation in fluorescence images and porosity in SEM images
+Exec=@EXEC@ %F
+Icon=@ICON@
+Terminal=false
+Categories=Science;Biology;Education;Graphics;
+MimeType=image/tiff;image/png;image/jpeg;
+Keywords=microscopy;nuclear;translocation;NF-kB;SEM;porosity;
+StartupWMClass=MicrosCount
