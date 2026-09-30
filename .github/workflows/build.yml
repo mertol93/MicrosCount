@@ -104,10 +104,11 @@ jobs:
         run: |
           VERSION=$(python3 -c "import re; print(re.search(r'__version__ = \"(.+?)\"', open('src/microscount/_version.py').read()).group(1))")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"; echo "v$VERSION is already released"
+          N=$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length' 2>/dev/null || echo 0)
+          if [ "$N" -gt 0 ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"; echo "v$VERSION is already released with $N files"
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"; echo "releasing v$VERSION"
+            echo "exists=false" >> "$GITHUB_OUTPUT"; echo "publishing v$VERSION"
           fi
       - uses: actions/download-artifact@v4
         if: steps.v.outputs.exists == 'false'
@@ -122,12 +123,12 @@ jobs:
           name: MicrosCount ${{ steps.v.outputs.version }}
           make_latest: "true"
           files: |
-            artifacts/*.exe
-            artifacts/*.zip
-            artifacts/*.dmg
-            artifacts/*.deb
-            artifacts/*.AppImage
-            artifacts/*.tar.gz
+            artifacts/**/*.exe
+            artifacts/**/*.zip
+            artifacts/**/*.dmg
+            artifacts/**/*.deb
+            artifacts/**/*.AppImage
+            artifacts/**/*.tar.gz
           body: |
             ## Download
             | System | File |
