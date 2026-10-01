@@ -2,23 +2,23 @@
 
 **Open-source microscopy image analysis with a point-and-click interface.** No programming needed.
 
-MicrosCount has two tools:
+MicrosCount has two modules:
 
-| Tool | What it measures | Typical images |
-|---|---|---|
-| **Nuclear translocation** | Nuclear/cytoplasmic (N/C) intensity ratio of a protein (e.g. NF-κB p65/RelA), per cell and per field | Fluorescence/confocal: a nuclear stain (DAPI, Hoechst) + a target channel |
-| **SEM porosity** | Porosity and pore-size distribution | Scanning electron micrographs of membranes, rocks, foams… |
+| Module | Analysis | What it measures | Typical images |
+|---|---|---|---|
+| **Bio & Cells** | Nuclear translocation | Nuclear/cytoplasmic (N/C) intensity ratio of a protein (e.g. NF-κB p65/RelA) for every cell and every field, summarised over conditions and repetitions, with fold changes, responders and comparisons | Fluorescence or confocal: a nuclear stain (DAPI, Hoechst) + a target channel |
+| **Materials & Mechanics** | SEM porosity | Porosity and pore-size distribution | Scanning electron micrographs of membranes, rocks, foams… |
 
-It reads **TIFF, PNG and JPEG** (8/16-bit, greyscale, RGB exports, multi-channel TIFF) and installs on **Windows, macOS and Linux**.
+It reads **TIFF, PNG and JPEG** (8/16-bit, greyscale, single-colour and merged RGB exports, multi-channel TIFF) and installs on **Windows, macOS and Linux**.
 
 > ### 📄 Please cite
 > If you use MicrosCount in published work, please cite:
 >
 > Acarer-Arat, S., Pir, İ., Tüfekci, M., Güneş-Durak, S., Akman, A., & Tüfekci, N. (2024). Heavy Metal Rejection Performance and Mechanical Performance of Cellulose-Nanofibril-Reinforced Cellulose Acetate Membranes. *ACS Omega*, 9(41), 42159–42171. https://doi.org/10.1021/acsomega.4c03038
 >
-> GitHub's **"Cite this repository"** button (right-hand panel) gives this reference in APA and BibTeX. Every results folder also contains a `CITATION.txt`, which additionally lists the method papers for the tool you used (see [Method references](#method-references)).
+> GitHub's **"Cite this repository"** button (right-hand panel) gives this reference in APA and BibTeX. Every results folder also contains a `CITATION.txt`, which additionally lists the method papers for the analysis you used (see [Method references](#method-references)).
 
-![Nuclear translocation: per-cell segmentation preview](docs/images/translocation_preview.png)
+![Bio & Cells: nuclear translocation, per-cell preview](docs/images/translocation_preview.png)
 
 ---
 
@@ -41,35 +41,69 @@ Python users can instead run `pip install git+https://github.com/mertol93/micros
 
 ---
 
-## Quick start: nuclear translocation
+## Bio & Cells: nuclear translocation
 
-1. **Add images.** Use *Add files…* or *Add folder…*, or drag files onto the table. MicrosCount pairs each nuclear-stain image with its target image automatically:
-   - blue single-colour exports are treated as the nuclear stain, and green/red ones as the target;
-   - files are paired by name (`img_ch00`/`img_ch01`, `C1-x`/`C2-x`, `…DAPI`/`…AF488`);
-   - if names don't match, files are paired by image content (the same nuclei appear in both channels).
-   
-   Multi-channel TIFFs and merged RGB images are used as they are. Right-click a row to swap or change a pairing. Type a **Condition** name for each field, e.g. *control*, *LPS 30 min*.
-2. **Choose the method.**
-   - **Per-cell (recommended):** every nucleus gets its own ratio.
-   - **Paper method:** the published whole-field procedure of Noursadeghi et al. (2008).
-3. **Check the settings.** The defaults work for most images. *Pixel size → From scale bar…* reads a burned-in scale bar.
-4. **Preview** a field. Measured nuclei are outlined in cyan, their cytoplasm is shaded magenta, and excluded nuclei are outlined in red. Hover over a cell to see its ratio.
-5. **Analyse all fields.** Results open in the *Results* tab and are saved to a new folder next to your images.
+### Quick start
+
+1. **Add images.** Use *Add files…* or *Add folder…*, or drag files or folders onto the table. MicrosCount pairs each nuclear-stain image with its target image:
+   - blue single-colour exports are the nuclear stain, green or red ones the target;
+   - files are paired by name (`img_ch00`/`img_ch01`, `C1-x`/`C2-x`, `…DAPI`/`…AF488`); if names don't match, by image content (the same nuclei appear in both channels);
+   - multi-channel TIFFs and merged RGB images are used as they are;
+   - in a Leica LAS X export, a third channel with no signal (e.g. an unused `_ch02`) and the `MetaData` folder are skipped.
+
+   Right-click a row to swap or change a pairing.
+2. **Check the conditions and repetitions.** They are read from the names (see [Conditions and repetitions](#conditions-and-repetitions)) and can be edited in the table or with *Set condition…* / *Set repetition…*.
+3. **Choose the method.** The paper method (Noursadeghi et al. 2008) is always computed. *Also measure every cell* (on by default) adds the per-cell lab protocol.
+4. **Check the settings.** The defaults are the lab protocol: nuclei filtered at size 0–Infinity px² and circularity 0.20–1.00, nuclei on the image edge excluded, rolling-ball background subtraction with a 50 px radius, Background_Mean from the cell-free area. *Pixel size → From scale bar…* reads a burned-in scale bar.
+5. **Describe the experiment** (optional). Choose the **control condition**, add **comparisons** (e.g. drug vs vehicle at each time point), set the order of the conditions and, if needed, a different reference for a condition's fold change. Without comparisons, every condition is compared with the control.
+6. **Preview** a field. Measured nuclei are outlined in cyan, their cytoplasm is shaded magenta, the cell-free area used for Background_Mean is tinted yellow, and nuclei that are not measured are outlined in red. Hover over a cell to see its values.
+7. **Analyse all fields.** Results open in the *Results* tab and are saved to a new folder next to your images.
+
+Repetitions analysed at different times can be put together afterwards with **Combine saved results…**: choose the folder that holds their result folders.
+
+### Conditions and repetitions
+
+- **Automatic (default).** If the file names in a folder name several conditions, as in a microscope export (`Experiment_vehicle-1_ch00.tif`, `Experiment_stimulus 30 min-2_ch00.tif` …), the condition is the file name without the shared experiment name before the first `_` and without the trailing field number, and **each folder is one repetition**. Otherwise **each folder is a condition** and its parent folder the repetition.
+- **File names** or **Folder names** force one of the two.
+- A field number is a number at the end of the name after `-`, `_` or `#`, in brackets, or after *field*/*pos*; a number after a plain space (`dose 10`) stays part of the condition.
+- Spellings that differ only in case, spaces or punctuation (`stimulus 30 min`, `Stimulus-30min`) are treated as one condition, so repetitions line up.
+- Repetition labels are shortened to what tells the folders apart (`…EXPERIMENT-3`, `…EXPERIMENT-4` → `3`, `4`).
+
+### How an experiment is summarised
+
+| Level | Value |
+|---|---|
+| **Cell** | N/C = Nuc_corr ÷ Cyto_corr (per-cell protocol) |
+| **Field** | median N/C of its measured cells (per cell), or the paper-method N/C |
+| **Condition, in each repetition** | mean ± SD of its field values; fold change = value ÷ value of its reference condition (the control unless set) in the same repetition; responders = share of cells above the 95th percentile of the control's cells in the same repetition (adjustable) |
+| **Condition, across repetitions** | mean ± SD of the repetition values |
+| **Comparison** | in each repetition: difference and Welch's t-test on the field values; across repetitions: the difference in each repetition, whether its direction agrees, and a paired t-test on the repetition values when there are at least three repetitions |
+
+Fields from one dish are technical replicates, so the within-repetition test is exploratory; the repetitions are the independent replicates. Paper-method means leave out fields whose automatic threshold failed (nuclear mask over 60% or under 0.2% of the field, or target mask over 97% or under 0.5%); this can be switched off.
 
 ### What you get
 
 | File | Contents |
 |---|---|
-| `per_cell.csv` | One row per nucleus: position, area, nuclear and cytoplasmic mean, N/C, log2 N/C, and whether and why it was excluded |
-| `per_field.csv` | One row per field: median/mean/geometric-mean N/C, IQR, fraction of cells above the cut-off, paper-method ratio, thresholds, background, QC flags |
-| `per_condition.csv` | Mean ± SD over fields (as in the paper) and pooled per-cell statistics |
-| `results.xlsx` | All of the above plus the settings, in one workbook |
-| `overlays/*.png` | Segmentation overlays for checking every field |
-| `summary.png` | Per-cell distributions and per-field ratios by condition |
-| `settings.yaml` | Every setting and input file. Reopen it with *File → Open settings / previous analysis* to reproduce the run. |
+| `results.xlsx` | *Read me* (what every number means), *Summary*, *Comparisons*, *Conditions*, *Fields*, *Cells*, *Settings* and *How to cite* in one workbook |
+| `summary.csv` | One row per condition: its value in each repetition, mean ± SD across repetitions, fold change, responders |
+| `comparisons.csv` | Each comparison in each repetition and across repetitions |
+| `per_condition.csv` | One row per repetition and condition: field values (mean ± SD), pooled cell statistics, fold change, responders, paper-method ratio |
+| `per_field.csv` | One row per field: per-cell summary, paper-method ratio and its threshold check, background, warnings |
+| `per_cell.csv` | One row per nucleus: position, area, perimeter, circularity, Nuc_Mean, Cyto_Mean, Background_Mean, Nuc_corr, Cyto_corr, N/C, C/N, and why it was not measured if it wasn't |
+| `histograms.csv` | The paper method's normalised nuclear and cytoplasmic histograms |
+| `summary.png`, `cells.png`, `histograms.png` | Field values per condition in each repetition and across repetitions; per-cell distributions; paper histograms |
+| `overlays/*.png` | What was measured in every field |
+| `settings.yaml` | Every setting, the experiment design and the input files. Reopen it with *File → Open settings / previous analysis* or `microscount run settings.yaml` to repeat the run. |
 | `CITATION.txt` | How to cite |
 
-## Quick start: SEM porosity
+![Bio & Cells: results of an experiment with two repetitions](docs/images/translocation_results.png)
+
+### Checks
+
+Every field is checked as it is measured, and warnings appear in the preview, the log and the *Fields* sheet: a failed automatic threshold, specks smaller than a tenth of a nucleus that pass the size filter, saturated pixels, DAPI and target channels out of register, almost no cell-free area or a Background_Mean above half the cytoplasmic level, JPEG input, and fields where no cell passed the filters.
+
+## Materials & Mechanics: SEM porosity
 
 1. **Add SEM images.** Pores should be the darkest regions; tick *Pores are bright* otherwise.
 2. **Set the pixel size** in µm/px from the micrograph's scale bar. If the image has a microscope data bar, remove it with *Crop at bottom*.
@@ -79,7 +113,7 @@ Python users can instead run `pip install git+https://github.com/mertol93/micros
    - a `pores.csv` table of every pore;
    - the MATLAB-style images for each micrograph: binary segmentation, depth map, pore-space segmentation, and the pore-size histogram.
 
-![SEM porosity preview](docs/images/porosity_preview.png)
+![Materials & Mechanics: SEM porosity preview](docs/images/porosity_preview.png)
 
 ---
 
@@ -87,27 +121,26 @@ Python users can instead run `pip install git+https://github.com/mertol93/micros
 
 ### Nuclear translocation: paper method
 
-This re-implements Noursadeghi et al. (2008), *J. Immunol. Methods* 329:194–200, exactly as published:
+This re-implements Noursadeghi et al. (2008), *J. Immunol. Methods* 329:194–200, as published with ImageJ 1.39:
 
-1. a 3 × 3 median filter on both channels (ImageJ *Median…* radius 1);
-2. ImageJ's *Default* (modified IsoData) auto-threshold of each filtered channel;
-3. nuclear ROI = the nuclear-stain mask, cytoplasmic ROI = target mask minus nuclear mask;
-4. N/C = mean *unfiltered* target intensity in the nuclear ROI ÷ that in the cytoplasmic ROI, pooled over the whole field.
+1. a 3 × 3 median filter on both channels (ImageJ *Median…*, radius 1);
+2. ImageJ 1.39's automatic IsoData threshold (*Image ▸ Adjust ▸ Threshold ▸ Auto*, with its modal-bin clipping) of each filtered channel, keeping pixels at or above the level;
+3. nuclear ROI = the nuclear-stain mask; cytoplasmic ROI = target mask minus nuclear mask;
+4. N/C = mean *unfiltered* target intensity in the nuclear ROI ÷ that in the cytoplasmic ROI over the whole field; zero-valued pixels are not counted, as in the paper's ImageJ histograms.
 
-The threshold is a line-by-line port of ImageJ 1.54 (`AutoThresholder.defaultIsoData`), including the modal-bin clipping and the 8-bit scaling of 16-bit data.
+The paper's cytoplasmic ROI is thresholded on the channel being measured, and nothing is subtracted as background, so the ratio is pulled towards 1 when translocation is strong. The per-cell protocol avoids this.
 
-### Nuclear translocation: per-cell method
+### Nuclear translocation: per-cell lab protocol
 
-The paper's cytoplasmic ROI is thresholded on the same channel that is being measured. When the target protein leaves the cytoplasm, dim cytoplasm drops below the threshold and the cytoplasmic mean is overestimated, so the ratio is compressed towards 1 exactly when translocation is strongest. The per-cell method avoids this:
+The laboratory's ImageJ protocol, automated for every cell:
 
-- **Nuclei** are detected on the nuclear stain after light Gaussian smoothing, thresholded (ImageJ Default by default), then:
-  - holes are filled;
-  - touching nuclei are split by a distance-transform watershed, which only splits objects larger than one typical nucleus with a real "neck";
-  - debris, clumps, irregular (merged) nuclei and nuclei touching the image edge are excluded.
-- **Cytoplasm** is a ring around each nucleus, 0.3 × the nucleus diameter wide by default, 1 px away from it. Pixels closer to a neighbouring nucleus are assigned to that nucleus. The ring does not depend on the target intensity; it only drops pixels at background level.
-- **Background** (the histogram mode of the target channel away from nuclei) is subtracted before the ratio. You can also set it manually or switch it off.
-- **Saturated pixels** are ignored, and cells with more than 5% saturated pixels are excluded.
-- The ratio is computed for each cell. The field and condition are summarised by the median, the IQR and the fraction of cells above a cut-off (default N/C > 1). The paper-method ratio is reported alongside for comparison.
+- **Nuclei:** the nuclear stain is smoothed (Gaussian, σ = 2 px), thresholded with the same automatic threshold, and holes are filled. Objects with more than 1.2 × the area of a typical nucleus are split along the valleys of their distance map (watershed). Particles are 8-connected and filtered as by *Analyze Particles*: size 0–Infinity px², circularity 4π·area/perimeter² between 0.20 and 1.00 with ImageJ's traced perimeter, and nuclei touching the image edge or a burned-in annotation are excluded.
+- **Target:** *Process ▸ Subtract Background*, rolling ball radius 50 px, ImageJ's algorithm reproduced exactly.
+- **Regions:** the nucleus; a cytoplasmic ring 0.3 × the nucleus diameter wide around it, where pixels closer to a neighbouring nucleus go to that nucleus and only pixels on a cell (target above the background noise) count; and the cell-free area of the field.
+- **Values:** Nuc_Mean, Cyto_Mean and Background_Mean of the background-subtracted target; Nuc_corr = Nuc_Mean − Background_Mean, Cyto_corr = Cyto_Mean − Background_Mean, N/C = Nuc_corr ÷ Cyto_corr and C/N = Cyto_corr ÷ Nuc_corr.
+- A cell is not measured, with the reason recorded, if it fails the size or circularity filter, touches the image edge or an excluded region, has fewer than 15 cytoplasm pixels, or has Cyto_corr ≤ 0. Optional: exclude saturated cells, clumps or irregular shapes.
+
+Every filter, the rolling-ball radius, the ring and the background can be changed in the settings.
 
 ### SEM porosity
 
@@ -143,24 +176,39 @@ Optional additions, all off by default:
 
 | Check | Result |
 |---|---|
-| ImageJ *Default* threshold vs ImageJ 1.54 (built from source) on 2,000 random histograms | **2,000/2,000 identical** |
-| Paper method vs ImageJ 1.54 on two 2048 × 2048 confocal fields (DAPI + target) | Identical median-filtered images and pixel-identical ROIs; means and ratios equal to 6 decimals (R = 1.162687 and 1.154091) |
-| SEM porosity vs the original MATLAB outputs (Rabbani's sample images) | Binary segmentation **pixel-identical**; porosity identical (0.09945, 0.19567); pore count 330/330 and 454/453; mean pore radius within 0.2% |
-| Per-cell method on synthetic cells with a known N/C (0.6, 1.0, 2.0, 2.5) | Recovered within 8%. On a synthetic field with N/C = 2.5, the paper method is biased towards 1. |
+| ImageJ 1.39 automatic thresholds (*Auto* and *Convert to Mask*) vs ImageJ 1.39u built from source, 80 histograms | **identical** |
+| Paper method vs ImageJ 1.39u on a synthetic field and on a 2048 × 2048 confocal field | identical thresholds, ROI areas, means and ratio |
+| ImageJ 1.54 *Default* threshold vs ImageJ 1.54 on 2,000 random histograms | **2,000/2,000 identical** |
+| Paper method with the current *Default* threshold vs ImageJ 1.54 on two 2048 × 2048 confocal fields | pixel-identical ROIs; identical means and ratios |
+| Rolling ball (*Subtract Background*) vs ImageJ 1.54, radius 30, 40 and 50 px, on two confocal fields | **pixel-identical** |
+| *Analyze Particles* area, perimeter and circularity vs ImageJ 1.54 (655 and 782 particles) | **identical** |
+| SEM porosity vs the original MATLAB outputs (Rabbani's sample images) | binary segmentation **pixel-identical**; porosity identical (0.09945, 0.19567); pore count 330/330 and 454/453; mean pore radius within 1% |
+| Per-cell protocol on synthetic cells with a known N/C of 0.6, 1.0 and 2.5 | per-cell median 0.63, 0.99 and 2.26; the paper method gives 0.71, 1.03 and 2.18 (pulled towards 1) |
 
-The ImageJ comparisons can be re-run with the Java harness in [`validation/imagej`](validation/imagej). The unit tests (`pytest`) check against stored ImageJ and MATLAB reference values.
+The ImageJ comparisons can be re-run with the Java programs in [`validation/`](validation). The unit tests (`pytest`) check stored ImageJ and MATLAB reference values, and `microscount selftest` runs a quick check of the main steps on any computer.
 
 ## Command line
 
 The installers include `microscount-cli`, and a pip install provides `microscount`:
 
 ```bash
-microscount translocation path/to/images --out results          # per-cell method
-microscount translocation path/to/images --method paper         # Noursadeghi et al. 2008
-microscount translocation --config results/settings.yaml        # re-run a saved analysis
-microscount porosity path/to/sem --pixel-size 0.459 --n-thresholds 4 --crop-bottom 60
+# Bio & Cells: nuclear translocation (paper method + per-cell lab protocol)
+microscount bio translocation path/to/images --out results
+microscount bio translocation rep1/ rep2/ rep3/ --control "vehicle" \
+    --compare "vehicle" "drug" --compare "stimulus" "drug + stimulus" --out results
+microscount bio translocation path/to/images --method paper          # Noursadeghi et al. 2008 only
+microscount bio translocation path/to/images --size 50-inf --circularity 0.2-1 --rolling-ball 30
+microscount bio combine results_rep1/ results_rep2/ --control "vehicle"   # repetitions analysed separately
+microscount run results/settings.yaml                                 # repeat a saved analysis
+
+# Materials & Mechanics: SEM porosity
+microscount materials porosity path/to/sem --pixel-size 0.459 --n-thresholds 4 --crop-bottom 60
+
+microscount modules      # list the modules and analyses
 microscount selftest
 ```
+
+Experiment options: `--conditions-from auto|name|folder`, `--repetition`, `--control`, `--compare A B` (repeatable), `--reference CONDITION REFERENCE` (repeatable), `--order`, `--responder-percentile`, `--keep-failed-paper-fields`, `--no-subfolders`. `microscount translocation` and `microscount porosity` remain as shortcuts.
 
 ## Building from source
 
@@ -173,13 +221,18 @@ microscount            # opens the GUI
 
 Installers are built with PyInstaller by [`.github/workflows/build.yml`](.github/workflows/build.yml) on GitHub's Windows, macOS and Linux runners. Each frozen app runs its self-test and a headless GUI start before it is packaged. To build locally, run `packaging/build_windows.ps1`, `packaging/build_macos.sh` or `packaging/build_linux.sh`.
 
+The code is organised by module: `microscount/bio` (nuclear translocation, file pairing, experiment summaries), `microscount/materials` (SEM porosity), `microscount/core` (image reading, thresholds, the ImageJ routines, figures and tables), `microscount/gui` and `microscount/cli.py`. New analyses are registered in `microscount/modules.py`.
+
 **Releasing:** bump `__version__` in `src/microscount/_version.py` (and `version` in `CITATION.cff`), then push to `main`. CI tests the code, builds all installers and publishes release `v<version>` with the installers attached.
 
 ## Method references
 
-Please also cite the method papers for the tool you used. These references are in `CITATION.txt` in every results folder.
+Please also cite the method papers for the analysis you used. These references are in `CITATION.txt` in every results folder.
 
 - **Nuclear translocation (paper method):** Noursadeghi, M., Tsang, J., Haustein, T., Miller, R. F., Chain, B. M., & Katz, D. R. (2008). Quantitative imaging assay for NF-κB nuclear translocation in primary human macrophages. *Journal of Immunological Methods*, 329(1–2), 194–200. https://doi.org/10.1016/j.jim.2007.10.015
+- **ImageJ routines (per-cell protocol):**
+  - Schneider, C. A., Rasband, W. S., & Eliceiri, K. W. (2012). NIH Image to ImageJ: 25 years of image analysis. *Nature Methods*, 9(7), 671–675. https://doi.org/10.1038/nmeth.2089
+  - Sternberg, S. R. (1983). Biomedical image processing. *Computer*, 16(1), 22–34. https://doi.org/10.1109/MC.1983.1654163
 - **SEM porosity (original MATLAB code):**
   - Rabbani, A., & Salehi, S. (2017). Dynamic modeling of the formation damage and mud cake deposition using filtration theories coupled with SEM image processing. *Journal of Natural Gas Science and Engineering*, 42, 157–168. https://doi.org/10.1016/j.jngse.2017.02.047
   - Ezeakacha, C. P., Rabbani, A., Salehi, S., & Ghalambor, A. (2018). Integrated image processing and computational techniques to characterize formation damage. *SPE International Conference and Exhibition on Formation Damage Control*.

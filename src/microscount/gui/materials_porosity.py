@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import math
+import html
 from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QMenu, QProgressBar, QPushButton, QScrollArea, QSpinBox,
     QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from ..porosity import PorositySettings, analyse_sem
-from ..render import jet_map, label_colours, porosity_overlay
+from ..materials.porosity import PorositySettings, analyse_sem
+from ..core.render import jet_map, label_colours, porosity_overlay
 from .common import (
     IMAGE_FILTER, DropTable, FitImageLabel, ImageViewer, LogView, MplCanvas, Task, expand_paths, fill_table, message, open_folder,
     start_task,
@@ -33,7 +32,7 @@ VIEWS = [("Overlay", "overlay"), ("Original", "grey"), ("Depth map (MATLAB style
 
 class PorosityPage(QWidget):
     status = Signal(str)
-    module = "porosity"
+    analysis = "porosity"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -400,7 +399,7 @@ class PorosityPage(QWidget):
         s = self.get_settings()
 
         def job():
-            from ..imageio import load_image
+            from ..core.imageio import load_image
 
             return analyse_sem(load_image(path), s, cond, keep_layers=True)
 
@@ -412,11 +411,11 @@ class PorosityPage(QWidget):
         self.tabs.setCurrentIndex(0)
         self.render_preview(keep=False)
         S = res.summary
-        text = (f"<b>{res.name}</b> &nbsp; porosity <b>{100 * S['porosity']:.2f}%</b>; {S['n_pores']} pores; "
+        text = (f"<b>{html.escape(res.name)}</b> &nbsp; porosity <b>{100 * S['porosity']:.2f}%</b>; {S['n_pores']} pores; "
                 f"mean equivalent radius <b>{S['mean_pore_radius_um']:.3f} µm</b> (SD {S['sd_pore_radius_um']:.3f}); "
                 f"thresholds {S['thresholds']} (pores ≤ {S['pore_threshold']:g})")
         for w in res.warnings:
-            text += f"<br><span style='color:#c05800'>⚠ {w}</span>"
+            text += f"<br><span style='color:#c05800'>⚠ {html.escape(w)}</span>"
         self.info.setText(text)
         r = np.array([p["equivalent_radius_um"] for p in res.pores if p["included"]])
         self.hist.histogram(r, "Equivalent pore radius (µm)", S["mean_pore_radius_um"],
@@ -447,7 +446,7 @@ class PorosityPage(QWidget):
             return
         if self._busy():
             return
-        from ..reporting import default_output_dir, run_porosity
+        from ..materials.report import default_output_dir, run_porosity
 
         out = Path(self.out_edit.text().strip()) if self.out_edit.text().strip() else default_output_dir([self.items[0][0]])
         s = self.get_settings()

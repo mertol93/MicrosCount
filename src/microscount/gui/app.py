@@ -11,9 +11,13 @@ from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence
 from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMainWindow, QMessageBox, QTabWidget
 
 from .. import APP_NAME, __version__
+from ..modules import MODULES
+from .bio_translocation import TranslocationPage
 from .common import REPO_URL, AboutDialog, message, resource
-from .porosity_page import PorosityPage
-from .translocation_page import TranslocationPage
+from .materials_porosity import PorosityPage
+
+# analysis key -> page class; every analysis in modules.MODULES needs one
+PAGES = {"translocation": TranslocationPage, "porosity": PorosityPage}
 
 
 def _light_palette() -> QPalette:
@@ -39,23 +43,35 @@ def _light_palette() -> QPalette:
 
 
 class MainWindow(QMainWindow):
+    """Two modules (Bio & Cells, Materials & Mechanics), each a tab holding its analyses."""
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} {__version__}")
         icon = resource("icon.png")
         if icon.exists():
             self.setWindowIcon(QIcon(str(icon)))
-        self.tabs = QTabWidget()
+        self.tabs = QTabWidget()  # one tab per module
         self.tabs.setDocumentMode(True)
-        self.trans = TranslocationPage()
-        self.poro = PorosityPage()
-        self.tabs.addTab(self.trans, "Nuclear translocation (fluorescence)")
-        self.tabs.addTab(self.poro, "Porosity (SEM)")
-        self.setCentralWidget(self.tabs)
+        self.module_tabs: dict[str, QTabWidget] = {}
+        self.pages: dict[str, object] = {}
         self.status_label = QLabel("Ready")
+        for m in MODULES:
+            inner = QTabWidget()
+            inner.setDocumentMode(True)
+            for an in m.analyses:
+                page = PAGES[an.key]()
+                page.status.connect(self.status_label.setText)
+                inner.addTab(page, an.title)
+                inner.setTabToolTip(inner.count() - 1, an.summary)
+                self.pages[an.key] = page
+            self.tabs.addTab(inner, m.title.replace("&", "&&"))  # a single & would become a keyboard shortcut
+            self.tabs.setTabToolTip(self.tabs.count() - 1, m.summary)
+            self.module_tabs[m.key] = inner
+        self.trans = self.pages["translocation"]
+        self.poro = self.pages["porosity"]
+        self.setCentralWidget(self.tabs)
         self.statusBar().addWidget(self.status_label, 1)
-        self.trans.status.connect(self.status_label.setText)
-        self.poro.status.connect(self.status_label.setText)
         self._menus()
         st = QSettings(APP_NAME, APP_NAME)
         geo = st.value("geometry")
@@ -65,7 +81,15 @@ class MainWindow(QMainWindow):
             self.resize(1480, 920)
 
     def page(self):
-        return self.tabs.currentWidget()
+        return self.tabs.currentWidget().currentWidget()
+
+    def show_analysis(self, key: str):
+        from ..modules import analysis
+
+        inner = self.module_tabs[analysis(key).module]
+        self.tabs.setCurrentWidget(inner)
+        inner.setCurrentWidget(self.pages[key])
+        return self.pages[key]
 
     def _menus(self):
         mb = self.menuBar()
@@ -109,28 +133,28 @@ class MainWindow(QMainWindow):
         h.addAction(a)
 
     def save_settings(self):
-        from ..reporting import write_settings_yaml
+        from ..core.report import write_settings_yaml
 
-        path, _ = QFileDialog.getSaveFileName(self, "Save settings", f"microscount_{self.page().module}_settings.yaml",
+        page = self.page()
+        path, _ = QFileDialog.getSaveFileName(self, "Save settings", f"microscount_{page.analysis}_settings.yaml",
                                               "Settings (*.yaml *.yml)")
         if path:
-            write_settings_yaml(Path(path), self.page().module, self.page().get_settings())
+            write_settings_yaml(Path(path), page.analysis, page.get_settings())
             self.status_label.setText(f"Settings saved to {path}")
 
     def load_settings(self):
-        from ..reporting import load_settings_yaml
+        from ..modules import load_settings
 
         path, _ = QFileDialog.getOpenFileName(self, "Open settings or a previous analysis", "",
                                               "Settings (*.yaml *.yml)")
         if not path:
             return
         try:
-            module, s, inputs = load_settings_yaml(path)
+            an, s, inputs = load_settings(path)
         except Exception as exc:  # noqa: BLE001
             message(self, "Could not read settings", str(exc), QMessageBox.Warning)
             return
-        page = self.poro if module == "porosity" else self.trans
-        self.tabs.setCurrentWidget(page)
+        page = self.show_analysis(an.key)
         page.apply_settings(s)
         if inputs:
             r = QMessageBox.question(self, "Load images too?",

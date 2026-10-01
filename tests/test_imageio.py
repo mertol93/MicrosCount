@@ -3,7 +3,7 @@ import pytest
 import tifffile
 from PIL import Image, ImageDraw
 
-from microscount.imageio import ChannelError, ImageLoadError, load_image, measure_scale_bar
+from microscount.core.imageio import ChannelError, ImageLoadError, load_image, measure_scale_bar
 
 
 def _blue_export(tmp_path, with_bar=True, palette=True):

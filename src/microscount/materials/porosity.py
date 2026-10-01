@@ -28,7 +28,7 @@ from dataclasses import asdict, dataclass, fields
 import numpy as np
 from scipy import ndimage as ndi
 
-from .imageio import LoadedImage
+from ..core.imageio import LoadedImage
 
 RGB2GRAY = (0.298936021293775, 0.587043074451121, 0.114020904255103)
 

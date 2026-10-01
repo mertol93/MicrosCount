@@ -56,17 +56,25 @@ def _outline(labels_or_mask: np.ndarray) -> np.ndarray:
 
 
 def translocation_overlay(layers: dict, base: str = "target", show_cytoplasm: bool = True, show_nuclei: bool = True,
-                          show_excluded: bool = True) -> np.ndarray:
-    """Target (or nuclear/composite) image with segmentation drawn on top."""
+                          show_excluded: bool = True, show_background: bool = True) -> np.ndarray:
+    """Target (or nuclear/composite) image with segmentation drawn on top.
+
+    ``base``: "target", "target_corrected" (after the rolling ball; per-cell only),
+    "nuclear" or "composite".
+    """
     valid = layers.get("valid")
     if base == "nuclear":
         rgb = grey_rgb(stretch(layers["nuclear"], valid))
     elif base == "composite":
         rgb = composite(layers["nuclear"], layers["target"], valid)
+    elif base == "target_corrected" and layers.get("target_corrected") is not None:
+        rgb = grey_rgb(stretch(layers["target_corrected"], valid))
     else:
         rgb = grey_rgb(stretch(layers["target"], valid))
     if valid is not None and show_excluded:
         _blend(rgb, ~valid, EXCLUDED_TINT, 0.55)
+    if show_background and layers.get("background_region") is not None:
+        _blend(rgb, layers["background_region"], YELLOW, 0.3)
 
     labels = layers.get("nuclear_labels")
     if labels is None:  # paper method: whole-field ROIs

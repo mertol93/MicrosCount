@@ -5,7 +5,7 @@ It incorporates or bundles the following third-party work.
 
 ## SEM_Porosity (MATLAB) by Arash Rabbani — BSD 3-Clause
 
-`src/microscount/porosity.py` is a Python port of `SEM_Porosity.m`, and `tests/data/SEM*.{jpg,png}`
+`src/microscount/materials/porosity.py` is a Python port of `SEM_Porosity.m`, and `tests/data/SEM*.{jpg,png}`
 are its sample images and reference outputs.
 
 ```

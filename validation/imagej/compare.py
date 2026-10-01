@@ -12,8 +12,8 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-from microscount.imageio import load_image
-from microscount.translocation import TranslocationSettings, analyse_field, median3x3
+from microscount.core.imageio import load_image
+from microscount.bio.translocation import TranslocationSettings, analyse_field, median3x3
 
 
 def main(ij_jar: str, nuclear: str, target: str) -> int:

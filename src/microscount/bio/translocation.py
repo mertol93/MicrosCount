@@ -1,20 +1,36 @@
-"""Nuclear translocation: nuclear/cytoplasmic (N/C) intensity ratio.
+"""Nuclear translocation: nuclear/cytoplasmic (N/C) intensity ratios.
 
-Two methods are provided.
+Paper method (always computed)
+    Noursadeghi M. et al. (2008) J Immunol Methods 329:194-200, step by step:
 
-``paper``
-    Noursadeghi M. et al. (2008) J Immunol Methods 329:194-200, as published:
-    3x3 median filter on both channels, ImageJ Default (IsoData) auto-threshold of
-    each filtered channel, nuclear ROI = nuclear-stain mask, cytoplasmic ROI =
-    target mask minus nuclear mask, and the ratio of mean *unfiltered* target
-    intensity in the two ROIs, pooled over the whole field.
+    1. for each high-power field, a 3x3 median filter is applied to the DAPI and
+       rel A (target) images;
+    2. each filtered image is converted to a binary mask by ImageJ's automatic
+       IsoData threshold (ImageJ 1.39 "Auto", pixels >= level), keeping the
+       fluorescence above background;
+    3. nuclear ROI = DAPI mask; cytoplasmic ROI = rel A mask minus DAPI mask
+       (ImageJ image calculator, 8-bit subtraction);
+    4. both masks are applied to the *original* rel A image, the ImageJ histograms
+       of the two ROIs are normalised by their number of data points (the zero bin,
+       which holds everything outside the mask, is not a data point) and the sums
+       of the normalised staining intensities are compared: N/C = mean nuclear rel A
+       / mean cytoplasmic rel A over the non-zero ROI pixels;
+    5. per condition, mean +/- SD over (five) high-power fields.
 
-``per_cell``
-    Nuclei are segmented individually (touching nuclei split by a distance-
-    transform watershed), each nucleus gets its own perinuclear cytoplasmic ring
-    (or territory) that does not depend on the target intensity, and the ratio
-    is computed per cell after background subtraction. The paper metric is still
-    reported for every field so the two can be compared.
+Per-cell lab protocol (``method="per_cell"``, the default; adds to the paper method)
+    The laboratory's ImageJ protocol, automated for every cell:
+
+    1. nuclei (blue): the nuclear stain is thresholded (after light Gaussian smoothing),
+       holes are filled, touching nuclei are split (watershed), and the particles are
+       filtered as by *Analyze Particles* - Size 0-Infinity px^2, Circularity 0.2-1.0,
+       with ImageJ's traced perimeter so that the values match ImageJ;
+    2. target (green): *Process > Subtract Background*, rolling ball radius 50 px
+       (30-50 px in the protocol), ImageJ's algorithm reproduced exactly;
+    3. mean grey values of the corrected target in each nucleus (Nuc_Mean), in a
+       perinuclear cytoplasmic ring (Cyto_Mean) and in the cell-free area of the field
+       (Background_Mean); the mean grey value of the nuclear stain is reported too;
+    4. Nuc_corr = Nuc_Mean - Background_Mean, Cyto_corr = Cyto_Mean - Background_Mean,
+       N/C = Nuc_corr / Cyto_corr, and its inverse C/N = Cyto_corr / Nuc_corr.
 """
 
 from __future__ import annotations
@@ -26,8 +42,8 @@ from typing import Callable
 import numpy as np
 from scipy import ndimage as ndi
 
-from .imageio import ChannelError, LoadedImage
-from .thresholds import compute_threshold
+from ..core.imageio import ChannelError, LoadedImage
+from ..core.thresholds import compute_threshold
 
 NUCLEAR_TOKENS = ("dapi", "hoechst", "nuclear", "nuclei", "nucleus", "draq5", "h33342", "sytox", "pi")
 
@@ -37,57 +53,71 @@ NUCLEAR_TOKENS = ("dapi", "hoechst", "nuclear", "nuclei", "nucleus", "draq5", "h
 
 @dataclass
 class TranslocationSettings:
-    method: str = "per_cell"  # "per_cell" | "paper"
+    """Defaults: the paper method (exact) plus the per-cell lab protocol.
+
+    ``paper()`` runs the published method only; the paper ratio is identical either way.
+    """
+
+    method: str = "per_cell"  # "per_cell" = paper + per-cell lab protocol | "paper" = paper only
     nuclear_channel: str = "auto"
     target_channel: str = "auto"
-    median_size: int = 3
-    nuclear_threshold: str = "ij_default"
-    nuclear_threshold_value: float | None = None
-    target_threshold: str = "ij_default"
-    target_threshold_value: float | None = None
-    legacy_inclusive_threshold: bool = False
-    background: str = "auto"  # "none" | "auto" | "manual"
-    background_value: float = 0.0
+    pixel_size_um: float | None = None
     exclude_annotations: bool = True
     exclude_rects: list = field(default_factory=list)  # [[x0, y0, x1, y1], ...] pixels
-    exclude_saturated: bool = True
-    exclude_zero_pixels: bool = False
-    # per-cell
-    segmentation_smoothing_px: float = 2.0  # Gaussian sigma for nucleus detection
-    nucleus_diameter_px: float | None = None  # None = estimate from the image
-    split_touching: bool = True
-    split_sensitivity: float = 0.10  # watershed h as a fraction of nucleus diameter
-    min_area_fraction: float = 0.30
-    max_area_fraction: float = 4.0
-    min_solidity: float = 0.80
-    exclude_border_cells: bool = True
-    nucleus_erode_px: int = 1
+    # ---- paper method (Noursadeghi et al. 2008); the thresholds also find the nuclei
+    median_size: int = 3
+    nuclear_threshold: str = "ij139_auto"
+    nuclear_threshold_value: float | None = None
+    target_threshold: str = "ij139_auto"
+    target_threshold_value: float | None = None
+    legacy_inclusive_threshold: bool = False  # only affects the ImageJ 1.42+ variant
+    exclude_zero_pixels: bool = True  # the paper's histograms drop the zero bin
+    fields_per_condition: int = 5  # the paper's sampling criteria (checked, not enforced)
+    min_cells_per_condition: int = 500
+    # ---- per-cell lab protocol: nuclei (blue) as ImageJ Analyze Particles
+    segmentation_smoothing_px: float = 2.0  # Gaussian sigma before thresholding the nuclear stain
+    split_touching: bool = True  # watershed, as Process > Binary > Watershed
+    split_sensitivity: float = 0.10  # neck depth needed to split, x nucleus diameter
+    nucleus_diameter_px: float | None = None  # None = estimated from the image
+    size_min_px2: float = 0.0
+    size_max_px2: float | None = None  # None = Infinity
+    circularity_min: float = 0.2
+    circularity_max: float = 1.0
+    exclude_border_cells: bool = True  # as "Exclude on edges"
+    # ---- per-cell lab protocol: target (green)
+    rolling_ball_radius: float = 50.0  # Subtract Background radius in px; 0 = off
+    background: str = "auto"  # Background_Mean: "auto" (cell-free area) | "manual" | "none"
+    background_value: float = 0.0
     cytoplasm: str = "ring"  # "ring" | "territory"
-    ring_gap_px: float | None = None  # None = 1 px
+    ring_gap_px: float = 0.0
     ring_width_px: float | None = None  # None = 0.3 x nucleus diameter
     territory_px: float | None = None  # None = 1.0 x nucleus diameter
-    restrict_to_cells: bool = True
+    restrict_to_cells: bool = True  # drop ring pixels at background level (off the cell)
     cell_detection_sigmas: float = 3.0
+    nucleus_erode_px: int = 0
     min_cytoplasm_pixels: int = 15
+    exclude_saturated: bool = False
     max_saturated_fraction: float = 0.05
-    responder_ratio: float | None = 1.0
-    pixel_size_um: float | None = None
+    max_area_fraction: float | None = None  # optional: exclude nuclei > this x typical area
+    min_solidity: float | None = None  # optional: exclude nuclei less convex than this
+    responder_ratio: float | None = 1.0  # per field: fraction of cells with N/C above this
+    # ---- experiment design (see bio/experiment.py)
+    conditions_from: str = "auto"  # "auto" | "name" (file names) | "folder" (folder names)
+    control_condition: str = ""  # control: responder cut-off, default fold reference and comparisons
+    fold_references: dict = field(default_factory=dict)  # condition -> its reference for the fold change
+    comparisons: list = field(default_factory=list)  # [[A, B], ...]; empty = each condition vs the control
+    condition_order: list = field(default_factory=list)
+    responder_percentile: float | None = 95.0  # responders: above this percentile of the control's cells
+    exclude_failed_paper_fields: bool = True  # leave fields with a failed automatic threshold out of paper means
 
     @classmethod
     def paper(cls) -> "TranslocationSettings":
-        """Noursadeghi et al. (2008) exactly as published."""
-        return cls(
-            method="paper",
-            median_size=3,
-            nuclear_threshold="ij_default",
-            target_threshold="ij_default",
-            background="none",
-            exclude_saturated=False,
-            exclude_zero_pixels=False,
-        )
+        """Noursadeghi et al. (2008) as published, without the per-cell step."""
+        return cls(method="paper")
 
     @classmethod
     def per_cell(cls) -> "TranslocationSettings":
+        """The paper method plus the per-cell lab protocol (the defaults)."""
         return cls()
 
     def to_dict(self) -> dict:
@@ -113,11 +143,13 @@ class FieldResult:
     cells: list[dict]
     warnings: list[str]
     layers: dict | None = None  # arrays for overlays / preview
+    histograms: dict | None = None  # normalised ROI histograms (paper Fig. 2B)
+    repetition: str = ""
 
     @property
     def ratio(self) -> float:
-        """Headline ratio of this field for the chosen method."""
-        key = "paper_ratio" if self.method == "paper" else "median_ratio"
+        """Headline ratio of this field: median per-cell N/C, or the paper ratio."""
+        key = "paper_ratio" if self.method == "paper" else "median_nc"
         return float(self.summary.get(key, math.nan))
 
 
@@ -307,14 +339,21 @@ def segment_nuclei(
     split: bool = True,
     sensitivity: float = 0.10,
     min_area_fraction: float = 0.30,
+    opening: bool = True,
+    connectivity: int = 1,
 ) -> tuple[np.ndarray, dict]:
-    """Label individual nuclei in a binary nuclear mask."""
+    """Label individual nuclei in a binary nuclear mask.
+
+    Holes are filled; ``opening`` removes one-pixel spurs and specks; ``connectivity`` 2
+    joins diagonal neighbours into one particle, as ImageJ's Analyze Particles does.
+    """
     from skimage.morphology import h_maxima
     from skimage.segmentation import relabel_sequential, watershed
 
     m = ndi.binary_fill_holes(mask)
-    m = ndi.binary_opening(m)
-    lab0, n0 = ndi.label(m)
+    if opening:
+        m = ndi.binary_opening(m)
+    lab0, n0 = ndi.label(m, structure=np.ones((3, 3)) if connectivity == 2 else None)
     info = {"components": int(n0), "diameter": diameter, "diameter_estimated": diameter is None}
     if n0 == 0:
         info["diameter"] = float(diameter) if diameter else math.nan
@@ -350,7 +389,7 @@ def segment_nuclei(
                 next_label += 1
             n_split += k - 1
     areas = np.bincount(labels.ravel())[1:]
-    small = np.nonzero(areas < min_area_fraction * a_ref)[0] + 1
+    small = np.nonzero(areas < min_area_fraction * a_ref)[0] + 1 if min_area_fraction > 0 else np.zeros(0, int)
     if small.size:
         labels = np.where(np.isin(labels, small), 0, labels)
     labels, _, _ = relabel_sequential(labels.astype(np.int32))
@@ -368,8 +407,10 @@ def analyse_field(
     field_id: str = "",
     condition: str = "",
     keep_layers: bool = True,
+    repetition: str = "",
 ) -> FieldResult:
     s = settings or TranslocationSettings()
+    per_cell = s.method != "paper"
     warns: list[str] = []
     n_idx = role_channel(nuc, s.nuclear_channel, "nuclear")
     t_idx = role_channel(tgt, s.target_channel, "target")
@@ -389,75 +430,57 @@ def analyse_field(
     if valid.sum() < 100:
         raise ValueError("almost no analysable pixels left after exclusions")
 
+    # ---- 1. paper method, exactly as published (always computed). The ROI masks are
+    # applied to the original rel A image; ImageJ histograms of the masked images are
+    # normalised by their number of data points - the zero bin holds everything outside
+    # the mask, so zero-valued pixels are not data points - and the sums of normalised
+    # intensity (= mean intensities) compared. No background, no saturation handling.
     n_f = _median(n_raw, s.median_size)
     t_f = _median(t_raw, s.median_size)
     thr_n = compute_threshold(n_f, s.nuclear_threshold, valid, s.nuclear_threshold_value, s.legacy_inclusive_threshold)
     thr_t = compute_threshold(t_f, s.target_threshold, valid, s.target_threshold_value, s.legacy_inclusive_threshold)
     mask_n = (n_f > thr_n.value) & valid
     mask_t = (t_f > thr_t.value) & valid
+    paper_meas = valid & (t_raw > 0) if s.exclude_zero_pixels else valid
+    nuc_roi = mask_n & paper_meas
+    cyto_roi = mask_t & ~mask_n & paper_meas
+    t_val = t_raw.astype(np.float64)
+    p_n = float(t_val[nuc_roi].mean()) if nuc_roi.any() else math.nan
+    p_c = float(t_val[cyto_roi].mean()) if cyto_roi.any() else math.nan
+    paper_ratio = p_n / p_c if (p_c and math.isfinite(p_c) and p_c > 0) else math.nan
+    histograms = roi_histograms(t_raw, nuc_roi, cyto_roi)
+    n_valid = max(1, int(valid.sum()))
+    frac_n = float(mask_n.sum()) / n_valid
+    frac_t = float(mask_t.sum()) / n_valid
+    for thr, name in ((thr_n, "nuclear"), (thr_t, "target")):
+        if thr.note:
+            warns.append(f"{name} threshold: {thr.note}")
+    paper_ok = 0.002 <= frac_n <= 0.6 and 0.005 <= frac_t <= 0.97
+    if frac_n > 0.6 or frac_n < 0.002:
+        warns.append(f"the nuclear mask covers {100 * frac_n:.1f}% of the field: the automatic threshold has "
+                     "probably failed (check the overlay; try another ImageJ threshold variant)")
+    if frac_t > 0.97 or frac_t < 0.005:
+        warns.append(f"the target mask covers {100 * frac_t:.1f}% of the field: check the target threshold")
 
     sat = tgt.saturation_value
     saturated = (t_raw >= sat) if sat is not None else np.zeros(t_raw.shape, bool)
-    measurable = valid.copy()
-    if s.exclude_saturated:
-        measurable &= ~saturated
-    if s.exclude_zero_pixels:
-        measurable &= t_raw > 0
-    t_val = t_raw.astype(np.float64)
 
-    # ---- per-cell segmentation (needed for the background region as well)
-    labels = None
-    seg: dict = {}
-    region_mask = mask_n  # nuclear pixels used to shape background / cytoplasm regions
-    thr_seg = None
-    if s.method == "per_cell":
-        sigma = float(s.segmentation_smoothing_px or 0)
-        n_seg = ndi.gaussian_filter(n_raw.astype(np.float32), sigma) if sigma > 0 else n_f
-        thr_seg = compute_threshold(
-            n_seg, s.nuclear_threshold, valid, s.nuclear_threshold_value, s.legacy_inclusive_threshold
-        )
-        region_mask = (n_seg > thr_seg.value) & valid
-        labels, seg = segment_nuclei(
-            n_seg, region_mask, s.nucleus_diameter_px, s.split_touching, s.split_sensitivity, s.min_area_fraction
-        )
+    # ---- 2. individual nuclei: particles for the per-cell step, or a count for the paper's
+    # ">= 500 cells" criterion. Smoothing keeps dim, noisy nuclei whole.
+    sigma = float(s.segmentation_smoothing_px or 0)
+    n_seg = ndi.gaussian_filter(n_raw.astype(np.float32), sigma) if sigma > 0 else n_f
+    thr_seg = compute_threshold(n_seg, s.nuclear_threshold, valid, s.nuclear_threshold_value,
+                                s.legacy_inclusive_threshold)
+    seg_mask = (n_seg > thr_seg.value) & valid
+    if per_cell:
+        # as ImageJ: threshold, fill holes, (watershed), 8-connected particles, no size cut here
+        labels, seg = segment_nuclei(n_seg, seg_mask, s.nucleus_diameter_px, s.split_touching, s.split_sensitivity,
+                                     min_area_fraction=0.0, opening=False, connectivity=2)
+    else:
+        labels, seg = segment_nuclei(n_seg, seg_mask, s.nucleus_diameter_px, True, s.split_sensitivity, 0.30)
     diameter = seg.get("diameter") or s.nucleus_diameter_px
     if not diameter or not math.isfinite(diameter):
-        smooth = ndi.gaussian_filter(n_raw.astype(np.float32), 2.0)
-        thr_tmp = compute_threshold(smooth, s.nuclear_threshold, valid, s.nuclear_threshold_value)
-        lab_tmp, _ = ndi.label(ndi.binary_opening(ndi.binary_fill_holes((smooth > thr_tmp.value) & valid)))
-        diameter = estimate_nucleus_diameter(lab_tmp)
-
-    # ---- background of the target channel
-    grow = max(2, int(round(0.5 * diameter)))
-    bg_region = valid & ~_dilate(region_mask, grow)
-    source = "outside nuclei"
-    if bg_region.sum() < max(1000, 0.005 * valid.sum()):
-        bg_region, source = valid, "whole field"
-    bg_mode, bg_sigma = estimate_background(t_f, bg_region)
-    if s.background == "none":
-        bg = 0.0
-    elif s.background == "manual":
-        bg, source = float(s.background_value), "manual"
-    else:
-        bg = bg_mode
-    t_val -= bg
-
-    # ---- paper metric (whole field). In per-cell mode it is always computed exactly as
-    # published (raw intensities, no background subtraction, no saturation filter) so the
-    # "paper-method ratio" column means the same thing whichever method is selected.
-    if s.method == "per_cell":
-        paper_vals = t_raw.astype(np.float64)
-        paper_meas = valid & (t_raw > 0) if s.exclude_zero_pixels else valid
-    else:
-        paper_vals, paper_meas = t_val, measurable
-    nuc_roi = mask_n & paper_meas
-    cyto_roi = mask_t & ~mask_n & paper_meas
-    p_n = float(paper_vals[nuc_roi].mean()) if nuc_roi.any() else math.nan
-    p_c = float(paper_vals[cyto_roi].mean()) if cyto_roi.any() else math.nan
-    paper_ratio = p_n / p_c if (p_c and math.isfinite(p_c) and p_c > 0) else math.nan
-    lab_all, n_comp = ndi.label(mask_n)
-    comp_areas = np.bincount(lab_all.ravel())[1:]
-    n_comp_real = int((comp_areas >= max(4, 0.3 * math.pi * (diameter / 2) ** 2)).sum())
+        diameter = 10.0
 
     dy, dx, rcorr = channel_shift(n_raw, t_raw, valid)
     if math.isfinite(dy) and math.hypot(dy, dx) > 1.5 and abs(rcorr) > 0.2:
@@ -466,11 +489,14 @@ def analyse_field(
     summary = {
         "field": field_id,
         "condition": condition,
+        "repetition": repetition,
         "nuclear_file": nuc.name,
         "target_file": tgt.name,
         "nuclear_channel": nuc.channel_names[n_idx],
         "target_channel": tgt.channel_names[t_idx],
         "method": s.method,
+        "threshold_method": s.nuclear_threshold if s.nuclear_threshold == s.target_threshold
+        else f"{s.nuclear_threshold} / {s.target_threshold}",
         "paper_ratio": paper_ratio,
         "paper_nuclear_mean": p_n,
         "paper_cytoplasm_mean": p_c,
@@ -480,11 +506,12 @@ def analyse_field(
         "target_threshold": thr_t.value,
         "nuclear_threshold_ij8": thr_n.level8,
         "target_threshold_ij8": thr_t.level8,
-        "background": bg,
-        "background_source": source if s.background != "none" else "none",
-        "background_estimate": bg_mode,
-        "background_sigma": bg_sigma,
-        "nuclear_components": n_comp_real,
+        "nuclei_count": int(labels.max()),
+        "criterion_fields": int(s.fields_per_condition),
+        "criterion_cells": int(s.min_cells_per_condition),
+        "nuclear_mask_fraction": frac_n,
+        "target_mask_fraction": frac_t,
+        "paper_ok": paper_ok,
         "nucleus_diameter_px": float(diameter),
         "saturated_fraction_nuclear": float(saturated[mask_n].mean()) if mask_n.any() else 0.0,
         "saturated_fraction_cytoplasm": float(saturated[mask_t & ~mask_n].mean())
@@ -515,67 +542,149 @@ def analyse_field(
         }
 
     cells: list[dict] = []
-    if s.method == "per_cell":
+    if per_cell:
         summary["segmentation_threshold"] = thr_seg.value
         cells, cell_layers, cell_summary, cell_warns = _per_cell(
-            labels, region_mask, t_val, t_raw, n_raw, t_f, measurable, saturated, valid, bg, bg_mode, bg_sigma, diameter, s
+            labels, seg_mask, n_raw, t_raw, valid, saturated, diameter, s
         )
         summary.update(cell_summary)
+        summary["nuclei_count"] = cell_summary["n_nuclei"]
         warns.extend(cell_warns)
         if layers is not None:
             layers.update(cell_layers)
     for c in cells:
         c["field"] = field_id
         c["condition"] = condition
-    return FieldResult(field_id, condition, nuc.name, tgt.name, s.method, summary, cells, warns, layers)
+        c["repetition"] = repetition
+    res = FieldResult(field_id, condition, nuc.name, tgt.name, s.method, summary, cells, warns, layers,
+                      repetition=repetition)
+    res.histograms = histograms
+    return res
 
 
-def _per_cell(labels, mask_n, t_val, t_raw, n_raw, t_f, measurable, saturated, valid, bg, bg_mode, bg_sigma, d, s):
+def roi_histograms(values: np.ndarray, nuc_roi: np.ndarray, cyto_roi: np.ndarray) -> dict:
+    """Normalised intensity histograms (frequency %, as Fig. 2B of the paper)."""
+    v = np.asarray(values)
+    if v.dtype == np.uint8:
+        edges = np.arange(257) - 0.5
+    else:
+        hi = float(v.max()) if v.size else 1.0
+        edges = np.linspace(0, hi if hi > 0 else 1.0, 257)
+    centres = 0.5 * (edges[:-1] + edges[1:])
+    out = {"intensity": centres}
+    for key, roi in (("nuclear_pct", nuc_roi), ("cytoplasm_pct", cyto_roi)):
+        h, _ = np.histogram(v[roi], bins=edges)
+        tot = h.sum()
+        out[key] = 100.0 * h / tot if tot else np.zeros(len(centres))
+    return out
+
+
+def _remove_small(mask: np.ndarray, min_size: int) -> np.ndarray:
+    if min_size <= 1 or not mask.any():
+        return mask
+    lab, n = ndi.label(mask, structure=np.ones((3, 3)))
+    areas = np.bincount(lab.ravel())
+    keep = areas >= min_size
+    keep[0] = False
+    return keep[lab]
+
+
+def _stats(v: np.ndarray, prefix: str) -> dict:
+    v = np.asarray(v, dtype=np.float64)
+    v = v[np.isfinite(v)]
+    nan = math.nan
+    return {
+        f"median_{prefix}": float(np.median(v)) if v.size else nan,
+        f"q1_{prefix}": float(np.percentile(v, 25)) if v.size else nan,
+        f"q3_{prefix}": float(np.percentile(v, 75)) if v.size else nan,
+        f"mean_{prefix}": float(np.mean(v)) if v.size else nan,
+        f"sd_{prefix}": float(np.std(v, ddof=1)) if v.size > 1 else nan,
+    }
+
+
+def _per_cell(labels, nuclear_mask, n_raw, t_raw, valid, saturated, d, s):
+    """The lab protocol: particle filters, rolling ball, background-corrected means per cell."""
     from skimage.measure import regionprops_table
+
+    from ..core.imagej import particle_shape, subtract_background
 
     warns: list[str] = []
     h, w = labels.shape
     n = int(labels.max())
-    gap = 1.0 if s.ring_gap_px is None else float(s.ring_gap_px)
+    a_ref = math.pi * (d / 2.0) ** 2
+
+    # target: Process > Subtract Background (rolling ball), measured without further filtering
+    radius = float(s.rolling_ball_radius or 0)
+    corrected = subtract_background(t_raw, radius) if radius > 0 else t_raw
+    g = corrected.astype(np.float64)
+    g_f = _median(corrected, s.median_size)  # only for deciding which pixels belong to cells
+
+    # where the cells are: target above the background noise, or nuclear stain
+    nuclear_any = nuclear_mask | (labels > 0)
+    grow = max(2, int(round(0.5 * d)))
+    outside = valid & ~_dilate(nuclear_any, grow)
+    if outside.sum() < max(1000, 0.005 * valid.sum()):
+        outside = valid & ~nuclear_any
+    bg_mode, bg_sigma = estimate_background(g_f, outside if outside.any() else valid)
+    cell_thr = bg_mode + s.cell_detection_sigmas * bg_sigma
+    on_cells = (g_f > cell_thr) & valid
+
+    # Background_Mean: mean grey value of the corrected target in the cell-free area
+    cellish = _remove_small(on_cells, max(9, int(0.1 * a_ref))) | nuclear_any
+    free = valid & ~_dilate(cellish, max(2, int(round(0.15 * d))))
+    n_free = int(free.sum())
+    if s.background == "none":
+        bgm, source = 0.0, "none"
+    elif s.background == "manual":
+        bgm, source = float(s.background_value), "manual"
+    elif n_free >= max(1000, 0.002 * valid.sum()):
+        bgm, source = float(g[free].mean()), "mean of the cell-free area"
+    else:
+        bgm = float(estimate_background(corrected, outside if outside.any() else valid)[0])
+        source = "most common value outside nuclei"
+        warns.append("almost no cell-free area in this field: Background_Mean was taken as the most common "
+                     "target value outside nuclei; consider a manual value")
+
+    # cytoplasm: a ring around each nucleus (or its territory), split between neighbours
+    gap = float(s.ring_gap_px or 0)
     if s.cytoplasm == "territory":
         reach = float(s.territory_px) if s.territory_px else float(d)
     else:
-        reach = float(s.ring_width_px) if s.ring_width_px else max(2.0, round(0.3 * d))
+        reach = float(s.ring_width_px) if s.ring_width_px else max(2.0, float(round(0.3 * d)))
     if n:
         dist_bg, (iy, ix) = ndi.distance_transform_edt(labels == 0, return_indices=True)
         nearest = labels[iy, ix]
         inner = np.where(dist_bg <= gap, nearest, 0) if gap > 0 else labels
         outer = np.where(dist_bg <= gap + reach, nearest, 0)
-        del iy, ix
+        del iy, ix, dist_bg
     else:
         inner = outer = labels
-    all_nuclear = mask_n | (labels > 0)
-    blocked = _dilate(all_nuclear, gap)
+    blocked = _dilate(nuclear_any, gap)
     cyto = np.where((inner == 0) & ~blocked & valid, outer, 0)
     cyto_before = cyto.copy()
-    cell_thr = bg_mode + s.cell_detection_sigmas * bg_sigma
     if s.restrict_to_cells:
-        cyto = np.where(t_f > cell_thr, cyto, 0)
+        cyto = np.where(on_cells, cyto, 0)
 
     nuc_meas = _erode_labels(labels, s.nucleus_erode_px)
-    # fall back to the full nucleus where erosion removed everything
     counts_er = np.bincount(nuc_meas.ravel(), minlength=n + 1)
     lost = np.nonzero(counts_er[1:] == 0)[0] + 1
-    if lost.size:
+    if lost.size:  # fall back to the full nucleus where trimming removed everything
         nuc_meas = np.where(np.isin(labels, lost), labels, nuc_meas)
+    measurable = valid & ~saturated if s.exclude_saturated else valid
 
-    def sums(lab):
+    def sums(lab, values):
         sel = measurable & (lab > 0)
         idx = lab[sel]
         cnt = np.bincount(idx, minlength=n + 1).astype(np.float64)
-        tot = np.bincount(idx, weights=t_val[sel], minlength=n + 1)
+        tot = np.bincount(idx, weights=values[sel], minlength=n + 1)
         return cnt, tot
 
-    n_cnt, n_sum = sums(nuc_meas)
-    c_cnt, c_sum = sums(cyto)
-    n_sat = np.bincount(labels.ravel(), weights=saturated.ravel().astype(np.float64), minlength=n + 1)
+    n_cnt, n_sum = sums(nuc_meas, g)
+    c_cnt, c_sum = sums(cyto, g)
+    sat_f = saturated.ravel().astype(np.float64)
+    n_sat = np.bincount(labels.ravel(), weights=sat_f, minlength=n + 1)
     n_all = np.bincount(labels.ravel(), minlength=n + 1).astype(np.float64)
-    c_sat = np.bincount(cyto.ravel(), weights=saturated.ravel().astype(np.float64), minlength=n + 1)
+    c_sat = np.bincount(cyto.ravel(), weights=sat_f, minlength=n + 1)
     c_all = np.bincount(cyto.ravel(), minlength=n + 1).astype(np.float64)
     c_before = np.bincount(cyto_before.ravel(), minlength=n + 1).astype(np.float64)
     dapi_sum = np.bincount(labels.ravel(), weights=n_raw.ravel().astype(np.float64), minlength=n + 1)
@@ -585,98 +694,130 @@ def _per_cell(labels, mask_n, t_val, t_raw, n_raw, t_f, measurable, saturated, v
     else:
         touches_invalid = np.zeros(n + 1, bool)
 
-    status = np.array(["ok"] * (n + 1), dtype=object)
+    shapes = particle_shape(labels, n)  # ImageJ area, traced perimeter, circularity
+    want = ("label", "centroid", "bbox") + (("solidity",) if s.min_solidity else ())
     if n:
-        props = regionprops_table(labels, properties=("label", "area", "centroid", "bbox", "solidity"))
+        props = regionprops_table(labels, properties=want)
     else:
-        props = {k: np.array([]) for k in ("label", "area", "centroid-0", "centroid-1", "bbox-0", "bbox-1", "bbox-2", "bbox-3", "solidity")}
-    a_ref = math.pi * (d / 2.0) ** 2
+        props = {k: np.array([]) for k in ("label", "centroid-0", "centroid-1", "bbox-0", "bbox-1", "bbox-2", "bbox-3")}
+    size_min = float(s.size_min_px2 or 0)
+    size_max = float(s.size_max_px2) if s.size_max_px2 else math.inf
+    px = float(s.pixel_size_um) if s.pixel_size_um else None
+    status = np.array(["ok"] * (n + 1), dtype=object)
     cells = []
-    ratios = []
+    n_particles_ok = 0
     for i in range(len(props["label"])):
         lab = int(props["label"][i])
-        area = float(props["area"][i])
+        sh = shapes.get(lab, {"area": 0, "perimeter": 0.0, "circularity": 0.0})
+        area, circ = sh["area"], sh["circularity"]
         border = props["bbox-0"][i] == 0 or props["bbox-1"][i] == 0 or props["bbox-2"][i] == h or props["bbox-3"][i] == w
         nm = n_sum[lab] / n_cnt[lab] if n_cnt[lab] else math.nan
         cm = c_sum[lab] / c_cnt[lab] if c_cnt[lab] else math.nan
+        nuc_corr, cyto_corr = nm - bgm, cm - bgm
+        nc = nuc_corr / cyto_corr if cyto_corr > 0 else math.nan
+        cn = cyto_corr / nuc_corr if nuc_corr > 0 else math.nan
         nsf = n_sat[lab] / n_all[lab] if n_all[lab] else 0.0
         csf = c_sat[lab] / c_all[lab] if c_all[lab] else 0.0
+        in_filter = size_min <= area <= size_max and s.circularity_min <= circ <= s.circularity_max
+        n_particles_ok += in_filter
         reason = "ok"
-        if s.exclude_border_cells and border:
+        if not size_min <= area <= size_max:
+            reason = "size outside the particle filter"
+        elif not s.circularity_min <= circ <= s.circularity_max:
+            reason = "circularity outside the particle filter"
+        elif s.exclude_border_cells and border:
             reason = "touches image edge"
         elif touches_invalid[lab]:
             reason = "touches excluded region"
-        elif area > s.max_area_fraction * a_ref:
+        elif s.max_area_fraction and area > s.max_area_fraction * a_ref:
             reason = "too large (clump?)"
-        elif props["solidity"][i] < s.min_solidity:
+        elif s.min_solidity and props["solidity"][i] < s.min_solidity:
             reason = "irregular shape (merged nuclei?)"
         elif c_cnt[lab] < s.min_cytoplasm_pixels:
             reason = "too little cytoplasm"
         elif s.exclude_saturated and max(nsf, csf) > s.max_saturated_fraction:
             reason = "saturated"
-        elif not (cm > 0):
-            reason = "cytoplasm at background level"
-        ratio = nm / cm if (reason == "ok") else (nm / cm if (cm and cm > 0) else math.nan)
+        elif not cyto_corr > 0:
+            reason = "cytoplasm at background level (Cyto_corr <= 0)"
         status[lab] = reason
         row = {
             "cell": lab,
             "x": float(props["centroid-1"][i]),
             "y": float(props["centroid-0"][i]),
-            "nucleus_area_px": area,
-            "nucleus_solidity": float(props["solidity"][i]),
-            "nuclear_mean": nm,
-            "cytoplasm_mean": cm,
-            "ratio": ratio,
-            "log2_ratio": math.log2(ratio) if ratio and ratio > 0 and math.isfinite(ratio) else math.nan,
+            "included": reason == "ok",
+            "exclusion_reason": "" if reason == "ok" else reason,
+            "nucleus_area_px": int(area),
+            "nucleus_perimeter_px": float(sh["perimeter"]),
+            "circularity": float(circ),
+            "dapi_mean": float(dapi_sum[lab] / n_all[lab]) if n_all[lab] else math.nan,
+            "nuc_mean": float(nm),
+            "cyto_mean": float(cm),
+            "background_mean": bgm,
+            "nuc_corr": float(nuc_corr),
+            "cyto_corr": float(cyto_corr),
+            "nc_ratio": float(nc),
+            "cn_ratio": float(cn),
+            "log2_nc": math.log2(nc) if nc > 0 else math.nan,
             "nuclear_pixels": int(n_cnt[lab]),
             "cytoplasm_pixels": int(c_cnt[lab]),
             "cytoplasm_coverage": float(c_all[lab] / c_before[lab]) if c_before[lab] else 0.0,
-            "nuclear_stain_mean": float(dapi_sum[lab] / n_all[lab]) if n_all[lab] else math.nan,
             "saturated_fraction_nucleus": float(nsf),
             "saturated_fraction_cytoplasm": float(csf),
-            "included": reason == "ok",
-            "exclusion_reason": "" if reason == "ok" else reason,
         }
-        if s.pixel_size_um:
-            row["nucleus_area_um2"] = area * float(s.pixel_size_um) ** 2
+        if px:
+            row["nucleus_area_um2"] = area * px * px
+            row["nucleus_perimeter_um"] = float(sh["perimeter"]) * px
         cells.append(row)
-        if reason == "ok":
-            ratios.append(ratio)
 
-    r = np.asarray(ratios, dtype=np.float64)
-    r = r[np.isfinite(r) & (r > 0)]
+    inc = [c for c in cells if c["included"]]
     summ = {
-        "n_nuclei_detected": int(n),
-        "n_cells_analysed": int(r.size),
-        "median_ratio": float(np.median(r)) if r.size else math.nan,
-        "mean_ratio": float(np.mean(r)) if r.size else math.nan,
-        "geomean_ratio": float(np.exp(np.mean(np.log(r)))) if r.size else math.nan,
-        "sd_ratio": float(np.std(r, ddof=1)) if r.size > 1 else math.nan,
-        "q1_ratio": float(np.percentile(r, 25)) if r.size else math.nan,
-        "q3_ratio": float(np.percentile(r, 75)) if r.size else math.nan,
+        "n_particles": int(n),
+        "n_nuclei": int(n_particles_ok),
+        "n_cells_analysed": len(inc),
+        **_stats([c["nc_ratio"] for c in inc], "nc"),
+        **{k: v for k, v in _stats([c["cn_ratio"] for c in inc], "cn").items() if k.startswith(("median", "mean"))},
+        "mean_nuc_corr": float(np.mean([c["nuc_corr"] for c in inc])) if inc else math.nan,
+        "mean_cyto_corr": float(np.mean([c["cyto_corr"] for c in inc])) if inc else math.nan,
+        "background_mean": bgm,
+        "background_source": source,
+        "background_area_px": n_free,
+        "rolling_ball_radius": radius,
         "cell_threshold": float(cell_thr),
         "ring_width_px": float(reach) if s.cytoplasm != "territory" else math.nan,
         "territory_px": float(reach) if s.cytoplasm == "territory" else math.nan,
         "ring_gap_px": gap,
     }
-    if s.responder_ratio is not None and r.size:
-        summ["responder_fraction"] = float(np.mean(r > s.responder_ratio))
+    nc_inc = np.array([c["nc_ratio"] for c in inc], dtype=np.float64)
+    if s.responder_ratio is not None and nc_inc.size:
+        summ["responder_fraction"] = float(np.mean(nc_inc > s.responder_ratio))
         summ["responder_cutoff"] = float(s.responder_ratio)
-    if r.size == 0 and n > 0:
-        warns.append("no cell passed the quality filters")
-    if s.background == "auto" and r.size:
-        cyto_level = np.nanmedian([c["cytoplasm_mean"] + bg for c in cells if c["included"]])
-        if bg > 0.5 * cyto_level:
-            warns.append(
-                "estimated background is more than half the cytoplasmic level: the field may be "
-                "confluent; consider a manual background value"
-            )
-    reasons = {}
+    if not inc and n > 0:
+        warns.append("no cell passed the filters")
+    if inc:
+        cut = max(2, int(round(0.1 * a_ref)))
+        small = sum(1 for c in inc if c["nucleus_area_px"] < cut)
+        if small:
+            warns.append(f"{small} measured particle(s) are smaller than a tenth of a typical nucleus (< {cut} px², "
+                         f"probably specks of debris or noise) but pass the Size {size_min:g}–"
+                         f"{'Infinity' if math.isinf(size_max) else f'{size_max:g}'} px² filter; a minimum size "
+                         f"of about {cut} px² would exclude them")
+        cyto_level = float(np.median([c["cyto_mean"] for c in inc]))
+        if s.background == "auto" and bgm > 0.5 * cyto_level:
+            warns.append("Background_Mean is more than half the cytoplasmic level: the field may be confluent; "
+                         "consider a manual background value")
+    if not s.exclude_saturated and inc:
+        sat_cells = sum(1 for c in inc if max(c["saturated_fraction_nucleus"], c["saturated_fraction_cytoplasm"])
+                        > s.max_saturated_fraction)
+        if sat_cells:
+            warns.append(f"{sat_cells} measured cell(s) have more than {100 * s.max_saturated_fraction:.0f}% "
+                         "saturated pixels (their means are underestimated)")
+    reasons: dict[str, int] = {}
     for c in cells:
         if not c["included"]:
             reasons[c["exclusion_reason"]] = reasons.get(c["exclusion_reason"], 0) + 1
     summ["excluded_cells"] = "; ".join(f"{k}: {v}" for k, v in sorted(reasons.items()))
-    layers = {"nuclear_labels": labels, "cytoplasm_labels": cyto, "cell_status": status}
+    layers = {"nuclear_labels": labels, "cytoplasm_labels": cyto, "cell_status": status,
+              "target_corrected": corrected, "background_region": free}
     return cells, layers, summ, warns
 
 
@@ -691,6 +832,7 @@ class FieldSpec:
     target_path: str
     condition: str = ""
     field_id: str = ""
+    repetition: str = ""
 
 
 def analyse_fields(
@@ -702,7 +844,7 @@ def analyse_fields(
     loader=None,
 ) -> tuple[list[FieldResult], list[dict]]:
     """Run a batch; returns (results, errors)."""
-    from .imageio import load_image
+    from ..core.imageio import load_image
 
     loader = loader or load_image
     results, errors = [], []
@@ -715,7 +857,8 @@ def analyse_fields(
         try:
             nuc = loader(spec.nuclear_path)
             tgt = nuc if spec.target_path == spec.nuclear_path else loader(spec.target_path)
-            res = analyse_field(nuc, tgt, settings, fid, spec.condition, keep_layers=keep_layers)
+            res = analyse_field(nuc, tgt, settings, fid, spec.condition, keep_layers=keep_layers,
+                                repetition=spec.repetition)
             results.append(res)
         except Exception as exc:  # noqa: BLE001 - keep going, report per field
             errors.append({"field": fid, "nuclear_file": spec.nuclear_path, "target_file": spec.target_path, "error": str(exc)})
@@ -724,41 +867,13 @@ def analyse_fields(
     return results, errors
 
 
-def summarise_conditions(results: list[FieldResult]) -> list[dict]:
-    """Per-condition summary: mean ± SD over fields, plus pooled per-cell stats."""
-    by: dict[str, list[FieldResult]] = {}
-    for r in results:
-        by.setdefault(r.condition or "(none)", []).append(r)
-    rows = []
-    for cond, rs in by.items():
-        paper = np.array([r.summary["paper_ratio"] for r in rs], dtype=np.float64)
-        paper = paper[np.isfinite(paper)]
-        row = {
-            "condition": cond,
-            "n_fields": len(rs),
-            "paper_ratio_mean": float(paper.mean()) if paper.size else math.nan,
-            "paper_ratio_sd": float(paper.std(ddof=1)) if paper.size > 1 else math.nan,
-            "paper_ratio_sem": float(paper.std(ddof=1) / math.sqrt(paper.size)) if paper.size > 1 else math.nan,
-        }
-        if any(r.method == "per_cell" for r in rs):
-            med = np.array([r.summary.get("median_ratio", math.nan) for r in rs], dtype=np.float64)
-            med = med[np.isfinite(med)]
-            pooled = np.array([c["ratio"] for r in rs for c in r.cells if c["included"]], dtype=np.float64)
-            pooled = pooled[np.isfinite(pooled) & (pooled > 0)]
-            row.update(
-                {
-                    "n_cells": int(pooled.size),
-                    "field_median_ratio_mean": float(med.mean()) if med.size else math.nan,
-                    "field_median_ratio_sd": float(med.std(ddof=1)) if med.size > 1 else math.nan,
-                    "pooled_median_ratio": float(np.median(pooled)) if pooled.size else math.nan,
-                    "pooled_q1_ratio": float(np.percentile(pooled, 25)) if pooled.size else math.nan,
-                    "pooled_q3_ratio": float(np.percentile(pooled, 75)) if pooled.size else math.nan,
-                    "pooled_geomean_ratio": float(np.exp(np.log(pooled).mean())) if pooled.size else math.nan,
-                }
-            )
-            cut = next((r.summary.get("responder_cutoff") for r in rs if "responder_cutoff" in r.summary), None)
-            if cut is not None and pooled.size:
-                row["responder_fraction"] = float(np.mean(pooled > cut))
-                row["responder_cutoff"] = float(cut)
-        rows.append(row)
-    return rows
+def summarise_conditions(results: list[FieldResult], settings: TranslocationSettings | None = None) -> list[dict]:
+    """Per repetition and condition: paper ratio and per-cell statistics (see ``bio.experiment``)."""
+    from .experiment import ExperimentDesign, summarise_experiment
+
+    s = settings or TranslocationSettings()
+    fields_ = [dict(r.summary, repetition=r.repetition or r.summary.get("repetition") or "1") for r in results]
+    cells = [dict(c, repetition=r.repetition or "1") for r in results for c in r.cells]
+    crit = (int(results[0].summary.get("criterion_fields", 5)), int(results[0].summary.get("criterion_cells", 500))) \
+        if results else (5, 500)
+    return summarise_experiment(fields_, cells, ExperimentDesign.from_settings(s), crit).conditions

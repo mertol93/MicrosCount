@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import math
 import os
-import subprocess
-import sys
 import traceback
 from pathlib import Path
 
@@ -13,13 +11,13 @@ import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGraphicsPixmapItem,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGraphicsPixmapItem,
     QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
     QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from .. import APP_NAME, __version__
-from ..imageio import SUPPORTED_EXTENSIONS
+from ..core.imageio import SUPPORTED_EXTENSIONS
 
 IMAGE_FILTER = "Images (*.tif *.tiff *.png *.jpg *.jpeg *.TIF *.TIFF *.PNG *.JPG *.JPEG);;All files (*)"
 REPO_URL = "https://github.com/mertol93/microscount"
@@ -194,7 +192,7 @@ def fill_table(table: QTableWidget, rows: list[dict], columns: list[tuple[str, s
 
 
 def expand_paths(paths: list[str]) -> list[str]:
-    from ..imageio import list_images
+    from ..core.imageio import list_images
 
     out = []
     for p in paths:
@@ -385,7 +383,7 @@ class MplCanvas(QWidget):
 
     def histogram(self, values: np.ndarray, xlabel: str, marker: float | None = None, marker_label: str = "",
                   ref: float | None = None, ref_label: str = "", bins: int = 40):
-        from ..reporting import AXIS, GRID, INK, INK2, SERIES, SURFACE
+        from ..core.report import AXIS, GRID, INK, INK2, SERIES, SURFACE
 
         f = self.figure
         f.clear()
@@ -411,6 +409,31 @@ class MplCanvas(QWidget):
                 ax.annotate(marker_label, xy=(marker, 1), xycoords=("data", "axes fraction"), xytext=(3, -22),
                             textcoords="offset points", fontsize=8, color=INK)
         ax.set_xlabel(xlabel, fontsize=9, color=INK)
+        f.tight_layout(pad=0.4)
+        self.canvas.draw_idle()
+
+    def roi_histograms(self, h: dict):
+        """Normalised nuclear / cytoplasmic intensity histograms (as Fig. 2B of the paper)."""
+        from ..core.report import AXIS, CYTO_COLOUR, GRID, INK, INK2, NUCLEAR_COLOUR
+
+        f = self.figure
+        f.clear()
+        ax = f.add_subplot(111)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        for side in ("left", "bottom"):
+            ax.spines[side].set_color(AXIS)
+        ax.tick_params(colors=INK2, labelsize=8)
+        ax.yaxis.grid(True, color=GRID, linewidth=0.6)
+        ax.set_axisbelow(True)
+        x = np.asarray(h["intensity"])
+        keep = x >= (1 if len(x) > 1 and x[1] - x[0] >= 1 else x[1] if len(x) > 1 else 0)
+        ax.plot(x[keep], np.asarray(h["nuclear_pct"])[keep], color=NUCLEAR_COLOUR, linewidth=1.4, label="Nuclear")
+        ax.plot(x[keep], np.asarray(h["cytoplasm_pct"])[keep], color=CYTO_COLOUR, linewidth=1.4, label="Cytoplasmic")
+        ax.set_xlabel("Target intensity", fontsize=9, color=INK)
+        ax.set_ylabel("Frequency (%)", fontsize=8, color=INK)
+        ax.set_ylim(bottom=0)
+        ax.legend(frameon=False, fontsize=8, labelcolor=INK)
         f.tight_layout(pad=0.4)
         self.canvas.draw_idle()
 

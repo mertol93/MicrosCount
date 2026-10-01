@@ -129,8 +129,15 @@ def is_supported(path: str | Path) -> bool:
     return Path(path).suffix.lower() in SUPPORTED_EXTENSIONS
 
 
+_LUT_LEGEND = re.compile(r"(?i)ch\d+lut$")  # Leica LAS X colour-table legends, e.g. "field-1ch0LUT.png"
+
+
 def list_images(folder: str | Path, recursive: bool = True) -> list[Path]:
-    """Supported image files under ``folder``, skipping hidden and result folders."""
+    """Supported image files under ``folder``.
+
+    Skips hidden folders, MicrosCount result folders, and what a Leica LAS X export
+    puts next to the images: the ``MetaData`` folder and its colour-table legends.
+    """
     folder = Path(folder)
     pattern = "**/*" if recursive else "*"
     out = []
@@ -140,7 +147,9 @@ def list_images(folder: str | Path, recursive: bool = True) -> list[Path]:
         rel = p.relative_to(folder).parts
         if any(part.startswith(".") for part in rel):
             continue
-        if any(part.lower().startswith("microscount_results") for part in rel[:-1]):
+        if any(part.lower().startswith("microscount_results") or part.lower() == "metadata" for part in rel[:-1]):
+            continue
+        if _LUT_LEGEND.search(p.stem):
             continue
         out.append(p)
     return out

@@ -19,6 +19,13 @@ METHOD_TRANSLOCATION = (
     "Journal of Immunological Methods, 329(1–2), 194–200. https://doi.org/10.1016/j.jim.2007.10.015"
 )
 
+METHOD_IMAGEJ = (
+    "Schneider, C. A., Rasband, W. S., & Eliceiri, K. W. (2012). NIH Image to ImageJ: 25 years of image analysis. "
+    "Nature Methods, 9(7), 671–675. https://doi.org/10.1038/nmeth.2089\n"
+    "Sternberg, S. R. (1983). Biomedical image processing. Computer, 16(1), 22–34. "
+    "https://doi.org/10.1109/MC.1983.1654163"
+)
+
 METHOD_POROSITY = (
     "Rabbani, A., & Salehi, S. (2017). Dynamic modeling of the formation damage and mud cake deposition "
     "using filtration theories coupled with SEM image processing. Journal of Natural Gas Science and "
@@ -55,6 +62,10 @@ def citation_text(module: str | None = None) -> str:
     ]
     if module in (None, "translocation"):
         lines += ["Nuclear translocation (paper method) is based on:", "", "  " + METHOD_TRANSLOCATION, ""]
+        lines += ["The per-cell step re-implements ImageJ's Analyze Particles and Subtract Background "
+                  "(rolling ball):", ""]
+        lines += ["  " + ln for ln in METHOD_IMAGEJ.split("\n")]
+        lines += [""]
     if module in (None, "porosity"):
         lines += [
             "SEM porosity is a port of A. Rabbani's SEM_Porosity MATLAB code (BSD-3-Clause); its author asks you to cite:",

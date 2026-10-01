@@ -25,12 +25,14 @@ def run(report: str | Path | None = None) -> bool:
         import tifffile
 
         from . import __version__
-        from .imageio import load_image
-        from .porosity import PorositySettings, analyse_sem
-        from .reporting import run_porosity, run_translocation
+        from .core.imageio import load_image
+        from .materials.porosity import PorositySettings, analyse_sem
+        from .bio.report import run_translocation
+        from .materials.report import run_porosity
         from .synthetic import sem_image, translocation_field
-        from .thresholds import ij_default
-        from .translocation import FieldSpec, TranslocationSettings, analyse_field
+        from .core.imagej import subtract_background
+        from .core.thresholds import ij_default
+        from .bio.translocation import FieldSpec, TranslocationSettings, analyse_field
 
         lines.append(f"MicrosCount {__version__} self-test")
         # ImageJ Default threshold: reference value computed with ImageJ 1.54
@@ -59,25 +61,40 @@ def run(report: str | Path | None = None) -> bool:
             check("read 16-bit TIFF", load_image(d / "s16.tif").data.dtype == np.uint16)
 
             nuc, tgt = load_image(files["tif"][0]), load_image(files["tif"][1])
-            s = TranslocationSettings()
-            s.exclude_border_cells = True
-            r = analyse_field(nuc, tgt, s, "synthetic", "test")
-            med = r.summary["median_ratio"]
+            r = analyse_field(nuc, tgt, TranslocationSettings.per_cell(), "synthetic", "test")
+            med = r.summary["median_nc"]
             check("per-cell N/C ratio on synthetic cells", abs(med - truth["ratio"]) / truth["ratio"] < 0.10,
                   f"median {med:.3f}, truth {truth['ratio']:.3f}, cells {r.summary['n_cells_analysed']}")
+            ball = subtract_background(np.tile(np.arange(64, dtype=np.uint8), (64, 1)), 10)
+            check("rolling-ball background removes a ramp", int(ball.max()) <= 1, f"max after subtraction {ball.max()}")
             p = analyse_field(nuc, tgt, TranslocationSettings.paper(), "synthetic", "test")
             check("paper method runs", np.isfinite(p.summary["paper_ratio"]), f"R = {p.summary['paper_ratio']:.3f}")
 
-            out = run_translocation([FieldSpec(str(files["png"][0]), str(files["png"][1]), "test", "field_001")],
-                                    TranslocationSettings(), d / "out_t")
-            check("translocation report files", all((d / "out_t" / f).exists() for f in ("per_field.csv", "per_cell.csv", "CITATION.txt", "summary.png")))
+            run_translocation([FieldSpec(str(files["png"][0]), str(files["png"][1]), "test", "field_001")],
+                              TranslocationSettings.paper(), d / "out_t")
+            check("paper-method report files", all((d / "out_t" / f).exists() for f in (
+                "per_field.csv", "per_condition.csv", "histograms.csv", "histograms.png", "CITATION.txt", "summary.png")))
+            run_translocation([FieldSpec(str(files["png"][0]), str(files["png"][1]), "test", "field_001")],
+                              TranslocationSettings.per_cell(), d / "out_c")
+            check("per-cell report files", (d / "out_c" / "per_cell.csv").exists())
+
+            from .bio.experiment import ExperimentDesign, summarise_experiment
+
+            rows = [{"field": f"{rep}{c}{k}", "condition": c, "repetition": rep, "median_nc": v + k * 0.1,
+                     "paper_ratio": v, "paper_ok": True} for rep in ("1", "2", "3") for c, v in (("ctrl", 1.0), ("x", 2.0))
+                    for k in (0, 1)]
+            e = summarise_experiment(rows, [], ExperimentDesign(control="ctrl"))
+            fold = [r["fold_change"] for r in e.conditions if r["condition"] == "x"]
+            allr = [c for c in e.comparisons if c["repetition"] == "all"]
+            check("experiment summary (fold change, comparisons)", len(fold) == 3 and all(abs(f - 2.05 / 1.05) < 1e-9
+                  for f in fold) and len(allr) == 1 and allr[0]["same_direction"], f"fold {fold[0]:.3f}")
 
             sem, true_por = sem_image(seed=2)
             Image.fromarray(np.stack([sem] * 3, -1)).save(d / "sem.png")
             res = analyse_sem(load_image(d / "sem.png"), PorositySettings(n_thresholds=2))
             por = res.summary["porosity"]
             check("SEM porosity on synthetic pores", abs(por - true_por) < 0.05, f"{por:.3f} vs true {true_por:.3f}")
-            out2 = run_porosity([(str(d / "sem.png"), "test")], PorositySettings(n_thresholds=2), d / "out_p")
+            run_porosity([(str(d / "sem.png"), "test")], PorositySettings(n_thresholds=2), d / "out_p")
             check("porosity report files", all((d / "out_p" / f).exists() for f in ("porosity_summary.csv", "pores.csv", "CITATION.txt")))
     except Exception:  # noqa: BLE001
         ok = False

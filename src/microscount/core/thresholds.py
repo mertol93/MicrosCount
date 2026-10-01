@@ -1,13 +1,24 @@
 """Automatic thresholds.
 
-``ij_default`` is a line-by-line port of ImageJ's "Default" method
-(``AutoThresholder.defaultIsoData`` -> ``IJIsoData``, ImageJ 1.54): the modal
-histogram bin is clipped to 1.5x the second-highest count when it exceeds twice
-that count, bins 0 and 255 are ignored, and the iterative intermeans loop is run
-on the 256-bin histogram. Images that are not 8-bit are first scaled to 8 bits
-exactly as ImageJ's ``convertToByte(true)`` does (min-max scaling).
+ImageJ's automatic threshold is the "IsoData" variant cited by Noursadeghi et al.
+(2008) (Ridler & Calvard 1978, as modified in ImageJ). Three ImageJ behaviours are
+reproduced line by line from the ImageJ source:
 
-All functions return a value ``t`` in the image's own intensity units with the
+``ij139_auto``  (default for the paper method)
+    ImageJ 1.39 *Image > Adjust > Threshold > Auto* (``ThresholdAdjuster``): the
+    modal histogram bin is clipped to 1.5x the second-highest count when it exceeds
+    twice that count, then ``ImageProcessor.getAutoThreshold`` (bins 0 and 255
+    ignored, iterative intermeans) gives level t; pixels >= t are foreground.
+``ij139_mask``
+    ImageJ 1.39 *Process > Binary > Convert to Mask* on an un-thresholded image
+    (``Thresholder.autoThreshold``): the same iteration on the *unclipped* histogram,
+    pixels >= t. It fails on images dominated by a background peak (very dim stains).
+``ij_default``
+    Current ImageJ (>= 1.42) "Default" with "Dark background"
+    (``AutoThresholder.defaultIsoData``): mode-clipped, pixels > t.
+
+Images that are not 8-bit are scaled to 8 bits with their min-max first, as ImageJ
+does. All functions return a value ``t`` in the image's own intensity units with the
 convention foreground = ``image > t``.
 """
 
@@ -18,8 +29,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
+IMAGEJ_METHODS = ("ij139_auto", "ij139_mask", "ij_default")
+
 METHOD_LABELS = {
-    "ij_default": "ImageJ Default (IsoData, as in the paper)",
+    "ij139_auto": "ImageJ 1.39 Auto (IsoData), as in the paper",
+    "ij139_mask": "ImageJ 1.39 Convert to Mask (IsoData, no mode clipping)",
+    "ij_default": "ImageJ 1.42+ Default (IsoData, dark background)",
     "otsu": "Otsu",
     "li": "Li (minimum cross-entropy)",
     "triangle": "Triangle",
@@ -97,6 +112,38 @@ def ij_default(hist: np.ndarray) -> int:
     return 0 if t == -1 else t
 
 
+def clip_mode(hist: np.ndarray) -> np.ndarray:
+    """ImageJ's display clipping of a dominant modal bin (ThresholdAdjuster.setHistogram)."""
+    data = np.asarray(hist, dtype=np.int64).copy()
+    mode = int(np.argmax(data))  # first maximum, as ImageStatistics.getMode
+    others = np.delete(data, mode)
+    max2 = int(others.max()) if len(others) else 0
+    if data[mode] > 2 * max2 and max2 != 0:
+        data[mode] = int(max2 * 1.5)
+    return data
+
+
+def ij139_auto(hist: np.ndarray) -> int:
+    """ImageJ 1.39 Threshold dialog "Auto": getAutoThreshold of the mode-clipped histogram."""
+    return ij_isodata(clip_mode(hist))
+
+
+def ij139_mask(hist: np.ndarray) -> int:
+    """ImageJ 1.39 Convert to Mask (no threshold set): getAutoThreshold of the raw histogram."""
+    return ij_isodata(np.asarray(hist, dtype=np.int64))
+
+
+def ij139_dark_objects(hist: np.ndarray) -> bool:
+    """True when ImageJ 1.39 would have taken the *dark* side as foreground
+    (Thresholder: ``(max - mode) < (mode - min)``)."""
+    h = np.asarray(hist)
+    nz = np.nonzero(h)[0]
+    if len(nz) == 0:
+        return False
+    mode = int(np.argmax(h))
+    return (int(nz[-1]) - mode) < (mode - int(nz[0]))
+
+
 def imagej_to_byte(values: np.ndarray, vmin: float | None = None, vmax: float | None = None):
     """ImageJ ``TypeConverter`` scaling of 16-bit/float data to 8 bits.
 
@@ -121,7 +168,7 @@ def imagej_to_byte(values: np.ndarray, vmin: float | None = None, vmax: float | 
 
 def compute_threshold(
     image: np.ndarray,
-    method: str = "ij_default",
+    method: str = "ij139_auto",
     valid: np.ndarray | None = None,
     manual_value: float | None = None,
     legacy_inclusive: bool = False,
@@ -131,7 +178,7 @@ def compute_threshold(
     ``legacy_inclusive`` reproduces ImageJ <= 1.41, whose automatic threshold
     kept pixels *equal* to the level (``>= t``); current ImageJ uses ``> t``.
     """
-    method = (method or "ij_default").lower()
+    method = (method or "ij139_auto").lower()
     vals = image[valid] if valid is not None else image.ravel()
     if vals.size == 0:
         raise ValueError("no valid pixels to threshold")
@@ -140,11 +187,18 @@ def compute_threshold(
             raise ValueError("manual threshold selected but no value given")
         return Threshold(float(manual_value), "manual")
 
-    if method == "ij_default":
+    if method in IMAGEJ_METHODS:
         b, vmin, scale = imagej_to_byte(vals)
         hist = np.bincount(b.ravel(), minlength=256)[:256]
-        t8 = ij_default(hist)
-        lower8 = t8 if legacy_inclusive else t8 + 1  # first foreground byte value
+        note = ""
+        if method == "ij_default":
+            t8 = ij_default(hist)
+            lower8 = t8 if legacy_inclusive else t8 + 1  # first foreground byte value
+        else:
+            t8 = ij139_auto(hist) if method == "ij139_auto" else ij139_mask(hist)
+            lower8 = t8  # ImageJ 1.39 keeps pixels >= t
+            if ij139_dark_objects(hist):
+                note = "ImageJ 1.39 would have selected the dark side here; the bright side (stain) is used"
         if vals.dtype == np.uint8:
             value = float(lower8) - 0.5
         elif np.issubdtype(vals.dtype, np.integer):
@@ -153,7 +207,7 @@ def compute_threshold(
             value = float(math.ceil(v_lo - 1e-9)) - 0.5
         else:
             value = float(np.nextafter(vmin + lower8 / scale, -np.inf))
-        return Threshold(value, method, level8=int(t8))
+        return Threshold(value, method, level8=int(t8), note=note)
 
     from skimage import filters
 

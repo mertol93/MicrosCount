@@ -8,13 +8,54 @@ import pytest
 from PIL import Image
 from scipy import ndimage as ndi
 
-from microscount.imageio import load_image
-from microscount.porosity import PorositySettings, analyse_sem, bwmorph_majority, matlab_multithresh
-from microscount.thresholds import ij_default, ij_isodata, _bilevel
-from microscount.translocation import TranslocationSettings, analyse_field
+from microscount.core.imageio import load_image
+from microscount.materials.porosity import PorositySettings, analyse_sem, bwmorph_majority, matlab_multithresh
+from microscount.core.thresholds import ij139_auto, ij139_mask, ij_default, ij_isodata, _bilevel
+from microscount.bio.translocation import TranslocationSettings, analyse_field
 
 DATA = Path(__file__).parent / "data"
-REF = json.loads((DATA / "imagej_reference.json").read_text())
+REF = json.loads((DATA / "imagej_reference.json").read_text())  # ImageJ 1.54
+REF139 = json.loads((DATA / "imagej139_reference.json").read_text())  # ImageJ 1.39u
+
+
+@pytest.mark.parametrize("case", REF139["thresholds"])
+def test_imagej139_threshold_routes(case):
+    h = np.array(case["histogram"])
+    assert ij139_mask(h) == case["mask"]  # Process > Binary > Convert to Mask
+    assert ij139_auto(h) == case["auto"]  # Image > Adjust > Threshold > Auto
+
+
+@pytest.mark.parametrize("route,method", [("auto", "ij139_auto"), ("mask", "ij139_mask")])
+def test_paper_method_matches_imagej139(route, method):
+    """The default paper method reproduces the published ImageJ 1.39 workflow exactly."""
+    ref = REF139[route]
+    s = TranslocationSettings()  # the defaults are the paper method
+    s.nuclear_threshold = s.target_threshold = method
+    r = analyse_field(load_image(DATA / "synthetic_nuclear.png"), load_image(DATA / "synthetic_target.png"), s)
+    S = r.summary
+    assert S["nuclear_threshold_ij8"] == ref["level_nuclear"] and S["target_threshold_ij8"] == ref["level_target"]
+    assert S["paper_nuclear_area_px"] == ref["nuclear_px"]
+    assert S["paper_cytoplasm_area_px"] == ref["cytoplasm_px"]
+    assert S["paper_nuclear_mean"] == pytest.approx(ref["nuclear_mean"], rel=1e-12)
+    assert S["paper_cytoplasm_mean"] == pytest.approx(ref["cytoplasm_mean"], rel=1e-12)
+    assert S["paper_ratio"] == pytest.approx(ref["ratio"], rel=1e-12)
+
+
+def test_paper_defaults():
+    s = TranslocationSettings()  # paper method + per-cell lab protocol
+    assert s.method == "per_cell" and TranslocationSettings.paper().method == "paper"
+    assert s.median_size == 3 and s.nuclear_threshold == s.target_threshold == "ij139_auto" and s.exclude_zero_pixels
+    # the lab protocol
+    assert (s.size_min_px2, s.size_max_px2, s.circularity_min, s.circularity_max) == (0.0, None, 0.2, 1.0)
+    assert s.rolling_ball_radius == 50 and s.background == "auto" and not s.exclude_saturated
+
+
+def test_paper_ratio_is_the_same_with_the_per_cell_step():
+    nuc, tgt = load_image(DATA / "synthetic_nuclear.png"), load_image(DATA / "synthetic_target.png")
+    a = analyse_field(nuc, tgt, TranslocationSettings.paper()).summary
+    b = analyse_field(nuc, tgt, TranslocationSettings()).summary
+    for k in ("paper_ratio", "paper_nuclear_mean", "paper_cytoplasm_mean", "paper_nuclear_area_px"):
+        assert a[k] == b[k]
 
 
 @pytest.mark.parametrize("case", REF["thresholds"])
@@ -25,9 +66,12 @@ def test_imagej_default_threshold(case):
     assert (b if b >= 0 else ij_isodata(h)) == case["ij_isodata"]
 
 
-def test_paper_pipeline_matches_imagej():
+def test_paper_pipeline_matches_current_imagej():
+    """With the ImageJ 1.42+ threshold variant (and zero-valued pixels kept, as that macro did)."""
     ref = REF["paper_pipeline_synthetic"]
     s = TranslocationSettings.paper()
+    s.nuclear_threshold = s.target_threshold = "ij_default"
+    s.exclude_zero_pixels = False
     r = analyse_field(load_image(DATA / "synthetic_nuclear.png"), load_image(DATA / "synthetic_target.png"), s)
     S = r.summary
     # ImageJ "Default dark" keeps pixels >= lower; MicrosCount reports the exclusive level (> t)
