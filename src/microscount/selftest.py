@@ -94,8 +94,16 @@ def run(report: str | Path | None = None) -> bool:
             res = analyse_sem(load_image(d / "sem.png"), PorositySettings(n_thresholds=2))
             por = res.summary["porosity"]
             check("SEM porosity on synthetic pores", abs(por - true_por) < 0.05, f"{por:.3f} vs true {true_por:.3f}")
-            run_porosity([(str(d / "sem.png"), "test")], PorositySettings(n_thresholds=2), d / "out_p")
-            check("porosity report files", all((d / "out_p" / f).exists() for f in ("porosity_summary.csv", "pores.csv", "CITATION.txt")))
+            run_porosity([(str(d / "sem.png"), "test")], PorositySettings(n_thresholds=2, pixel_size_um=0.5), d / "out_p")
+            check("porosity report files", all((d / "out_p" / f).exists() for f in (
+                "per_image.csv", "per_pore.csv", "summary.csv", "pore_size_distribution.csv", "CITATION.txt")))
+            bar = np.vstack([np.stack([sem] * 3, -1), np.zeros((40, sem.shape[1], 3), np.uint8)])
+            bar[-25:-20, 40:140] = 255  # a scale bar drawn in the data bar
+            from .materials.porosity import detect_data_bar, measure_data_bar_scale
+
+            k = detect_data_bar(bar[..., 0])
+            check("SEM data bar found and its scale bar measured", k == 40 and measure_data_bar_scale(bar[..., 0], k) == 100,
+                  f"{k} rows, scale bar {measure_data_bar_scale(bar[..., 0], k)} px")
     except Exception:  # noqa: BLE001
         ok = False
         lines.append("[FAIL] exception:\n" + traceback.format_exc())

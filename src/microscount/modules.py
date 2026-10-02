@@ -52,8 +52,8 @@ MODULES: tuple[Module, ...] = (
         (
             Analysis(
                 "porosity", "materials", "SEM porosity",
-                "Porosity and pore-size distribution of membranes and porous materials (port of A. Rabbani's "
-                "SEM_Porosity)",
+                "Porosity, pore sizes and pore density of membranes and porous materials (port of A. Rabbani's "
+                "SEM_Porosity), summarised over samples and repetitions",
                 "microscount.materials.porosity:PorositySettings",
             ),
         ),
@@ -94,4 +94,21 @@ def load_settings(path: str | Path):
     if key not in ANALYSES:
         raise ValueError(f"{Path(path).name} is not a MicrosCount settings file (no known analysis)")
     a = analysis(key)
-    return a, settings_class(key).from_dict(doc.get("settings") or {}), doc.get("inputs") or []
+    s = settings_class(key).from_dict(doc.get("settings") or {})
+    if "settings" not in doc and isinstance(doc.get("design"), dict):  # a combine.yaml: the experiment design only
+        for k, attr in _DESIGN_FIELDS.get(key, {}).items():
+            if k in doc["design"] and hasattr(s, attr):
+                setattr(s, attr, doc["design"][k])
+        if doc.get("histogram_bins") and hasattr(s, "histogram_bins"):
+            s.histogram_bins = int(doc["histogram_bins"])
+    return a, s, doc.get("inputs") or []
+
+
+# experiment design saved by "combine" (key) -> the analysis setting that holds it
+_DESIGN_FIELDS = {
+    "translocation": {"control": "control_condition", "references": "fold_references", "comparisons": "comparisons",
+                      "order": "condition_order", "responder_percentile": "responder_percentile",
+                      "responder_ratio": "responder_ratio", "exclude_failed_paper_fields": "exclude_failed_paper_fields"},
+    "porosity": {"reference": "reference_sample", "references": "references", "comparisons": "comparisons",
+                 "order": "sample_order"},
+}

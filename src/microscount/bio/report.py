@@ -447,11 +447,15 @@ def combine_results(folders: list[str | Path], design: ExperimentDesign | None, 
     out.mkdir(parents=True, exist_ok=True)
     exp, field_rows, cell_rows = combine_result_folders(folders, design, repetitions)
     source = "combined from " + ", ".join(Path(f).name for f in folders)
-    files = write_experiment(out, exp, field_rows, cell_rows, design, source=source, errors=[])
-    doc = {"microscount_version": __version__, "combined_from": [str(Path(f).resolve()) for f in folders],
-           "repetitions": repetitions, "design": design.to_dict()}
+    errors: list[dict] = []
+    files = write_experiment(out, exp, field_rows, cell_rows, design, source=source, errors=errors)
+    if errors:
+        files["errors"] = write_csv(out / "errors.csv", errors)
+    doc = {"microscount_version": __version__, "analysis": "translocation",
+           "combined_from": [str(Path(f).resolve()) for f in folders], "repetitions": repetitions,
+           "design": design.to_dict()}
     with open(out / "combine.yaml", "w", encoding="utf-8") as f:
         yaml.safe_dump(doc, f, sort_keys=False, allow_unicode=True)
     files["settings"] = out / "combine.yaml"
     return {"experiment": exp, "conditions": exp.conditions, "field_rows": field_rows, "out_dir": out, "files": files,
-            "errors": []}
+            "errors": errors}

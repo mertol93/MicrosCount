@@ -1,4 +1,3 @@
-import os
 
 import numpy as np
 import pytest
@@ -34,7 +33,7 @@ def test_cli_translocation_and_porosity(tmp_path):
     Image.fromarray(sem).save(tmp_path / "sem.jpg", quality=95)
     assert main(["materials", "porosity", str(tmp_path / "sem.jpg"), "--n-thresholds", "2", "--out",
                  str(tmp_path / "po")]) == 0
-    assert (tmp_path / "po" / "porosity_summary.csv").exists()
+    assert (tmp_path / "po" / "per_image.csv").exists() and (tmp_path / "po" / "summary.csv").exists()
     assert main(["porosity", str(tmp_path / "sem.jpg"), "--n-thresholds", "2", "--out", str(tmp_path / "po2")]) == 0
 
 
@@ -174,6 +173,97 @@ def test_gui_experiment(tmp_path, monkeypatch):
     assert p.comp_table.rowCount() == 3  # two repetitions and all repetitions
     assert p.cond_table.rowCount() == 2  # two conditions across repetitions
     monkeypatch.setattr(tp.QFileDialog, "getExistingDirectory", lambda *a, **k: str(tmp_path / "outs"))
+    p.combine_saved()
+    wait()
+    assert list((tmp_path / "outs").glob("microscount_combined_*/summary.csv"))
+    assert not dialogs
+    w.close()
+
+
+def test_gui_materials_experiment(tmp_path, monkeypatch):
+    """Samples and repetitions from names, pixel size per image, reference, comparison, typed edits, run, combine."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    import time
+
+    import tifffile
+    from PySide6.QtWidgets import QApplication
+
+    import microscount.gui.materials_porosity as mp
+    from microscount.gui.app import MainWindow
+
+    dialogs = []
+    monkeypatch.setattr(mp, "message", lambda *a, **k: dialogs.append(a))
+    root = tmp_path / "data"
+    seed = 0
+    for rep in (1, 2):
+        d = root / f"batch-{rep}"
+        d.mkdir(parents=True)
+        for name, por in (("CA", 0.10), ("CA-CNF1", 0.18)):
+            for k in (1, 2):
+                seed += 1
+                Image.fromarray(sem_image(porosity=por, seed=seed)[0]).save(d / f"Membrane_{name}_5kx_{k:02d}.png")
+    fei = "[Scan]\r\nPixelWidth=5e-008\r\nPixelHeight=5e-008\r\n"  # an FEI TIFF records its pixel size
+    tifffile.imwrite(root / "batch-1" / "Membrane_CA_5kx_03.tif", sem_image(porosity=0.1, seed=99)[0],
+                     extratags=[(34682, "s", 0, fei, True)])
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow()
+    p = w.poro
+
+    def wait():
+        t0 = time.time()
+        while p.task is not None and time.time() - t0 < 120:
+            app.processEvents()
+            time.sleep(0.01)
+        for _ in range(10):
+            app.processEvents()
+
+    p.add_paths([str(root)])
+    wait()
+    assert len(p.specs) == 9 and {s.repetition for s in p.specs} == {"1", "2"}
+    assert {s.sample for s in p.specs} == {"CA", "CA-CNF1"}
+    tif = next(r for r, s in enumerate(p.specs) if s.path.endswith(".tif"))
+    assert p.table.item(tif, 3).text() == "0.05" and "FEI" in p.table.item(tif, 4).text()
+    png = next(r for r, s in enumerate(p.specs) if s.path.endswith(".png"))
+    assert p.table.item(png, 4).text() == "unknown"
+    p.pixel.setValue(0.02)  # default pixel size for files without one
+    assert p.table.item(png, 3).text() == "0.02" and p.table.item(png, 4).text() == "default"
+    p.table.item(png, 3).setText("0,03")  # typed pixel size, comma decimal
+    assert p.specs[png].pixel_size_um == 0.03 and p.table.item(png, 4).text() == "typed"
+    p.table.item(png, 3).setText("")
+    assert p.specs[png].pixel_size_um is None
+    assert sorted(p.reference.itemData(i) for i in range(p.reference.count())) == ["", "CA", "CA-CNF1"]
+    p.reference.setCurrentIndex(p.reference.findData("CA"))
+    monkeypatch.setattr(p, "_choose_samples", lambda *a: ["CA-CNF1", "CA"])
+    p.add_comparison()
+    s = p.get_settings()
+    assert s.reference_sample == "CA" and s.comparisons == [["CA", "CA-CNF1"]] and s.pixel_size_um == 0.02
+    # a typed sample survives reading the names again
+    sample = p.specs[png].sample
+    p.table.item(png, 1).setText("X")
+    p.samples_from.setCurrentIndex(p.samples_from.findData("folder"))
+    assert p.specs[png].sample == "X" and {s.sample for s in p.specs} - {"X"} == {"batch-1", "batch-2"}
+    p.samples_from.setCurrentIndex(p.samples_from.findData("auto"))
+    p.table.item(png, 1).setText(sample)
+    assert {s.sample for s in p.specs} == {"CA", "CA-CNF1"}
+    p.apply_settings(p.get_settings())  # settings round trip
+    assert p.get_settings().comparisons == s.comparisons and p.get_settings().reference_sample == "CA"
+    from microscount.materials.porosity import PorositySettings
+
+    p.apply_settings(PorositySettings(samples_from="folder"))  # settings opened without their images
+    assert {q.sample for i, q in enumerate(p.specs) if i != png} == {"batch-1", "batch-2"}
+    p.apply_settings(s)
+    assert {q.sample for q in p.specs} == {"CA", "CA-CNF1"} and p.get_settings().reference_sample == "CA"
+    out = tmp_path / "outs" / "run"
+    p.out_edit.setText(str(out))
+    p.run_all()
+    wait()
+    for f in ("summary.csv", "per_image.csv", "comparisons.csv", "pore_size_distribution.csv", "results.xlsx"):
+        assert (out / f).exists(), f
+    assert p.sum_table.rowCount() == 2 and p.img_table.rowCount() == 9 and p.comp_table.rowCount() > 0
+    doc = yaml.safe_load((out / "settings.yaml").read_text(encoding="utf-8"))
+    assert {d["pixel_size_um"] for d in doc["inputs"]} == {None}  # nothing typed: file or default
+    monkeypatch.setattr(mp.QFileDialog, "getExistingDirectory", lambda *a, **k: str(tmp_path / "outs"))
     p.combine_saved()
     wait()
     assert list((tmp_path / "outs").glob("microscount_combined_*/summary.csv"))

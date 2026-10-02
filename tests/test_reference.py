@@ -92,19 +92,17 @@ def test_multithresh_matches_matlab(name, matlab_first_level):
 
 @pytest.mark.parametrize("name", ["SEM1", "SEM2"])
 def test_sem_porosity_matches_matlab(name):
-    res = analyse_sem(load_image(DATA / f"{name}.jpg"), PorositySettings())
+    res = analyse_sem(load_image(DATA / f"{name}.jpg"), PorositySettings(pixel_size_um=0.459))  # MATLAB "Resolution"
     binary_matlab = np.asarray(Image.open(DATA / f"{name}_Binary Segmentation.png")).astype(bool)
     assert np.array_equal(res.layers["solid"], binary_matlab)  # pixel-identical segmentation
     assert res.summary["porosity"] == pytest.approx(1 - binary_matlab.mean(), abs=1e-12)
     seg = np.asarray(Image.open(DATA / f"{name}_Pore Space Segmentation.png").convert("RGB"))
     pores_matlab = ~np.all(seg == 255, axis=-1)
+    assert np.array_equal(res.layers["pores"], pores_matlab)  # pixel-identical watershed split
     lab, n = ndi.label(pores_matlab, structure=np.ones((3, 3)))
     radii = 0.459 * np.sqrt(np.bincount(lab.ravel())[1:] / np.pi)
-    # watershed lines are placed slightly differently from MATLAB's implementation
-    assert abs(res.summary["n_pores"] - n) <= 0.01 * n
-    assert res.summary["mean_pore_radius_um"] == pytest.approx(radii.mean(), rel=0.01)
-    iou = (res.layers["pores"] & pores_matlab).sum() / (res.layers["pores"] | pores_matlab).sum()
-    assert iou > 0.98
+    assert res.summary["n_pores"] == n
+    assert res.summary["mean_pore_radius_um"] == pytest.approx(radii.mean(), rel=1e-12)
 
 
 def test_bwmorph_majority_border_zero_padding():

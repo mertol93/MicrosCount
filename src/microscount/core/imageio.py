@@ -7,7 +7,10 @@ its native dtype, plus what the analyses need to know about it:
   blue DAPI snapshot, a merged RGB composite, or a multi-channel TIFF);
 * which colour carries the signal in a single-colour export;
 * a mask of burned-in annotations (scale bars, text) detected from colour;
-* the saturation value, and the pixel size when the file records one.
+* the saturation value, and the pixel size when the file records one: SEM metadata
+  (FEI / Thermo Fisher, Zeiss), OME or ImageJ calibration, or the TIFF resolution tags;
+* for SEM files, what the instrument records about the image (``metadata``): the height
+  of the data bar below the scan (FEI / Thermo Fisher), voltage, working distance, detector.
 """
 
 from __future__ import annotations
@@ -51,6 +54,8 @@ class LoadedImage:
     lossy: bool = False
     pixel_size_um: float | None = None
     annotation_mask: np.ndarray | None = None  # True = burned-in overlay pixel
+    pixel_size_source: str | None = None  # where pixel_size_um came from
+    metadata: dict = field(default_factory=dict)  # instrument metadata (SEM), see _sem_metadata
     signal_channel: int | None = None  # populated channel of a single-colour export
     colour: str | None = None  # display colour of a single-colour export
     notes: list[str] = field(default_factory=list)
@@ -147,7 +152,8 @@ def list_images(folder: str | Path, recursive: bool = True) -> list[Path]:
         rel = p.relative_to(folder).parts
         if any(part.startswith(".") for part in rel):
             continue
-        if any(part.lower().startswith("microscount_results") or part.lower() == "metadata" for part in rel[:-1]):
+        if any(part.lower().startswith(("microscount_results", "microscount_combined")) or part.lower() == "metadata"
+               for part in rel[:-1]):
             continue
         if _LUT_LEGEND.search(p.stem):
             continue
@@ -164,15 +170,19 @@ def load_image(path: str | Path) -> LoadedImage:
         raise ImageLoadError(f"{path}: file not found")
     notes: list[str] = []
     try:
+        meta: dict = {}
         if ext in (".tif", ".tiff"):
-            arr, is_rgb, names, px = _read_tiff(path, notes)
+            arr, is_rgb, names, px, meta = _read_tiff(path, notes)
         else:
             arr, is_rgb, names, px = _read_pillow(path, notes)
     except ImageLoadError:
         raise
     except Exception as exc:  # noqa: BLE001 - report any reader failure uniformly
         raise ImageLoadError(f"{path.name}: could not be read ({exc})") from exc
-    return _build(path, arr, is_rgb, names, px, ext in LOSSY_EXTENSIONS, notes)
+    img = _build(path, arr, is_rgb, names, px[0] if px else None, ext in LOSSY_EXTENSIONS, notes)
+    img.pixel_size_source = px[1] if px else None
+    img.metadata = meta
+    return img
 
 
 def _read_tiff(path: Path, notes: list[str]):
@@ -185,7 +195,11 @@ def _read_tiff(path: Path, notes: list[str]):
         page = tif.pages[0]
         photometric = int(getattr(page, "photometric", 1))
         colormap = getattr(page, "colormap", None)
-        px = _tiff_pixel_size_um(tif)
+        meta = _sem_metadata(tif)
+        if meta.get("pixel_size_um"):
+            px = (meta["pixel_size_um"], f"{meta['instrument']} metadata")
+        else:
+            px = _tiff_pixel_size(tif)
         names = _tiff_channel_names(tif)
 
     if photometric == 3 and colormap is not None and np.issubdtype(arr.dtype, np.integer):
@@ -223,7 +237,11 @@ def _read_tiff(path: Path, notes: list[str]):
         names = None
     elif names is not None and len(names) != arr.shape[0]:
         names = None
-    return arr, is_rgb, names, px
+    if "scan_height_px" in meta:  # FEI / Thermo Fisher: the data bar is drawn below the scanned area
+        bar = arr.shape[-2] - int(meta["scan_height_px"])
+        if 0 < bar < 0.5 * arr.shape[-2]:
+            meta["data_bar_px"] = bar
+    return arr, is_rgb, names, px, meta
 
 
 def _squeeze_axes(arr: np.ndarray, axes: str):
@@ -233,17 +251,92 @@ def _squeeze_axes(arr: np.ndarray, axes: str):
 
 _UNIT_TO_UM = {
     "m": 1e6, "mm": 1e3, "cm": 1e4, "um": 1.0, "µm": 1.0, "μm": 1.0, "micron": 1.0,
-    "microns": 1.0, "micrometer": 1.0, "micrometre": 1.0, "nm": 1e-3, "\\u00b5m": 1.0,
+    "microns": 1.0, "micrometer": 1.0, "micrometre": 1.0, "nm": 1e-3, "\\u00b5m": 1.0, "pm": 1e-6,
 }
 
 
 def _unit_factor(unit: str | None) -> float | None:
     if not unit:
         return None
-    return _UNIT_TO_UM.get(unit.strip().lower())
+    return _UNIT_TO_UM.get(unit.strip().replace("Â", "").lower())
 
 
-def _tiff_pixel_size_um(tif) -> float | None:
+def _number(v) -> float | None:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if np.isfinite(x) and x > 0 else None
+
+
+def _sem_metadata(tif) -> dict:
+    """Pixel size and acquisition details recorded by FEI / Thermo Fisher or Zeiss SEMs (empty if none)."""
+    out: dict = {}
+    try:
+        fei = tif.fei_metadata
+    except Exception:  # noqa: BLE001
+        fei = None
+    if fei:
+        out["instrument"] = "FEI / Thermo Fisher"
+        scan, escan = fei.get("Scan") or {}, fei.get("EScan") or {}
+        beam, ebeam = fei.get("Beam") or {}, fei.get("EBeam") or {}
+        pw = _number(scan.get("PixelWidth")) or _number(escan.get("PixelWidth"))  # metres
+        if pw and 1e-12 < pw < 1e-3:
+            out["pixel_size_um"] = pw * 1e6
+        hv = _number(beam.get("HV")) or _number(ebeam.get("HV"))  # volts
+        if hv:
+            out["voltage_kv"] = hv / 1000.0
+        wd = _number((fei.get("Stage") or {}).get("WorkingDistance")) or _number(ebeam.get("WD"))  # metres
+        if wd:
+            out["working_distance_mm"] = wd * 1000.0
+        hfw = _number(scan.get("HorFieldsize")) or _number(escan.get("HorFieldsize"))
+        if hfw:
+            out["field_width_um"] = hfw * 1e6
+        det = fei.get("Detectors") or {}
+        if det.get("Name"):
+            out["detector"] = str(det["Name"]) + (f" ({det['Mode']})" if det.get("Mode") else "")
+        ry = _number((fei.get("Image") or {}).get("ResolutionY"))
+        if ry:
+            out["scan_height_px"] = int(ry)
+        return out
+    try:
+        sem = tif.sem_metadata
+    except Exception:  # noqa: BLE001
+        sem = None
+    if sem:
+        out["instrument"] = "Zeiss"
+
+        def value(*keys):
+            for k in keys:
+                v = sem.get(k)
+                if isinstance(v, tuple) and len(v) >= 2:
+                    return v[1], (v[2] if len(v) > 2 else "")
+            return None, ""
+
+        v, unit = value("ap_image_pixel_size", "ap_pixel_size")
+        f = _unit_factor(unit or "nm")
+        if _number(v) and f:
+            out["pixel_size_um"] = float(v) * f
+        v, unit = value("ap_actualkv", "ap_manualkv")
+        if _number(v):
+            out["voltage_kv"] = float(v) * (1e-3 if unit.lower() == "v" else 1.0)
+        v, unit = value("ap_wd")
+        if _number(v):
+            out["working_distance_mm"] = float(v) * (1e-3 if unit.lower() in ("µm", "um") else 1.0)
+        v, _unit = value("dp_detector_channel", "dp_detector_type")
+        if isinstance(v, str) and v:
+            out["detector"] = v
+        v, unit = value("ap_mag")
+        if v not in (None, ""):
+            out["magnification"] = f"{v} {unit}".strip()
+    return out
+
+
+TIFF_RESOLUTION = "TIFF resolution"  # a bare resolution tag: weaker than a calibration
+
+
+def _tiff_pixel_size(tif) -> tuple[float, str] | None:
+    """Pixel size from OME or ImageJ calibration or the resolution tags: (µm, source) or None."""
     try:
         if getattr(tif, "is_ome", False) and tif.ome_metadata:
             m = re.search(r'PhysicalSizeX="([0-9.eE+-]+)"', tif.ome_metadata)
@@ -252,7 +345,7 @@ def _tiff_pixel_size_um(tif) -> float | None:
                 f = _unit_factor(u.group(1) if u else "µm") or 1.0
                 val = float(m.group(1)) * f
                 if 1e-4 < val < 1e3:
-                    return val
+                    return val, "OME metadata"
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -269,18 +362,25 @@ def _tiff_pixel_size_um(tif) -> float | None:
         resunit = page.tags.get("ResolutionUnit")
         resunit = int(resunit.value) if resunit is not None else 2
         if unit and _unit_factor(unit):
-            val = _unit_factor(unit) / ppu
-        elif resunit == 3:  # centimetre
-            val = 1e4 / ppu
-        elif resunit == 2:  # inch: only believable at microscope-like densities
-            val = 25400.0 / ppu
-            if val > 50:
+            val, source = _unit_factor(unit) / ppu, "ImageJ calibration"
+        elif resunit in (2, 3):  # inch or centimetre: only believable at microscope-like densities
+            val, source = (25400.0 if resunit == 2 else 1e4) / ppu, TIFF_RESOLUTION
+            if val > 10:  # a print or scan resolution (72 to 2400 dpi), not a calibration
                 return None
         else:
             return None
-        return val if 1e-4 < val < 1e3 else None
+        return (val, source) if 1e-4 < val < 1e3 else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _tiff_pixel_size_um(tif) -> float | None:
+    """Pixel size in µm recorded in a TIFF, or None (kept for callers of version 0.2)."""
+    meta = _sem_metadata(tif)
+    if meta.get("pixel_size_um"):
+        return meta["pixel_size_um"]
+    px = _tiff_pixel_size(tif)
+    return px[0] if px else None
 
 
 def _tiff_channel_names(tif) -> list[str] | None:

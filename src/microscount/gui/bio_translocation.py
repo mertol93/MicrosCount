@@ -611,6 +611,7 @@ class TranslocationPage(QWidget):
         self.cb_restrict.setChecked(s.restrict_to_cells)
         self.cell_sig.setValue(s.cell_detection_sigmas)
         self.resp.setValue(s.responder_ratio or 0)
+        source = self.cond_from.currentData()
         self.cond_from.blockSignals(True)
         _set_combo(self.cond_from, s.conditions_from or "auto")
         self.cond_from.blockSignals(False)
@@ -620,6 +621,8 @@ class TranslocationPage(QWidget):
         self._order = list(s.condition_order or [])
         self.resp_pct.setValue(s.responder_percentile or 0)
         self.cb_paper_qc.setChecked(bool(s.exclude_failed_paper_fields))
+        if getattr(self, "pairs", None) and self.cond_from.currentData() != source:
+            self._reassign()  # the fields already listed, read with the new source
         self._sync_design()
         self._sync_enabled()
 
@@ -1240,9 +1243,10 @@ class TranslocationPage(QWidget):
         d = QFileDialog.getExistingDirectory(self, "Folder holding the result folders to combine")
         if not d:
             return
+        from ..core.report import find_result_folders
+
         root = Path(d)
-        found = sorted({p.parent for pattern in ("per_field.csv", "*/per_field.csv", "*/*/per_field.csv")
-                        for p in root.glob(pattern)})
+        found = find_result_folders(root, "per_field.csv")
         if not found:
             message(self, "Combine saved results", "No MicrosCount result folders (with per_field.csv) were found there.")
             return

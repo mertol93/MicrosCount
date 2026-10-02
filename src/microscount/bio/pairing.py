@@ -29,7 +29,6 @@ Spellings that differ only in case, spaces or punctuation (``stimulus 30 min`` a
 from __future__ import annotations
 
 import math
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +37,10 @@ import numpy as np
 from scipy import ndimage as ndi
 
 from ..core.imageio import LoadedImage, load_image
+from ..core.naming import (  # noqa: F401 - re-exported for callers of version 0.2
+    GROUP_SOURCES, assign_groups, condition_key, label_items, short_labels, split_field_number, unify_groups,
+)
+from ..core.naming import strip_shared as _strip_shared  # noqa: F401
 
 NUCLEAR_WORDS = ("dapi", "hoechst", "nuclear", "nuclei", "nucleus", "nuc", "draq5", "h33342", "blue")
 TARGET_WORDS = (
@@ -91,12 +94,6 @@ def field_key(path: str | Path) -> str:
 
 _CHANNEL_WORD = re.compile(
     r"(?i)^(?:ch\d+|c\d+|w\d+|channel\d+|" + "|".join(re.escape(w) for w in NUCLEAR_WORDS + TARGET_WORDS) + r")$")
-_FIELD_WORDS = r"(?:field|pos|position|img|image|series|xy|view|fov|site|point)"
-_FIELD_NO = (
-    re.compile(r"^(?P<base>.*?\S)\s*[-_#]\s*(?:" + _FIELD_WORDS + r"[\s_\-]*)?(?P<n>\d+)\s*$", re.I),  # "vehicle-1", "x_002"
-    re.compile(r"^(?P<base>.*?\S)\s*\(\s*(?P<n>\d+)\s*\)\s*$"),  # "vehicle (2)"
-    re.compile(r"^(?P<base>.*?\S)[\s_\-]*" + _FIELD_WORDS + r"[\s_\-]*(?P<n>\d+)\s*$", re.I),  # "vehicle field 3"
-)
 
 
 def image_name(path: str | Path) -> str:
@@ -110,63 +107,11 @@ def image_name(path: str | Path) -> str:
     return "".join(parts).strip(" _-.") or stem
 
 
-def split_field_number(name: str) -> tuple[str, int | None]:
-    """``"stimulus 30 min-2"`` -> ``("stimulus 30 min", 2)``.
-
-    A number counts as a field number when it ends the name after ``-``, ``_`` or ``#``,
-    in brackets, or after a word such as *field* or *pos*; a number after a plain space
-    (``"dose 10"``) is kept as part of the condition.
-    """
-    for rx in _FIELD_NO:
-        m = rx.match(name)
-        if m:
-            return m.group("base").rstrip(" _-.#"), int(m.group("n"))
-    return name.strip(), None
-
-
-def condition_key(name: str) -> str:
-    """Spelling-insensitive identity of a condition: ``"stimulus 30 min"`` == ``"Stimulus-30min"``."""
-    return re.sub(r"[^0-9a-zà-ÿα-ω]+", "", (name or "").lower())
-
-
-def _strip_shared(names: list[str]) -> list[str]:
-    """Remove the part every name shares up to an underscore: the experiment or project name."""
-    if len(set(names)) < 2:
-        return names
-    cut = os.path.commonprefix(names).rfind("_") + 1
-    if cut and all(len(n) > cut for n in names):
-        names = [n[cut:] for n in names]
-    suffix = os.path.commonprefix([n[::-1] for n in names])[::-1]
-    i = suffix.find("_")
-    if i >= 0:
-        cut = len(suffix) - i
-        if all(len(n) > cut for n in names):
-            names = [n[:-cut] for n in names]
-    return names
-
-
-def short_labels(labels: list[str]) -> dict[str, str]:
-    """Shorten folder names to what tells them apart: ``exp-3``, ``exp-4`` -> ``3``, ``4``."""
-    uniq = list(dict.fromkeys(labels))
-    out = {u: u for u in uniq}
-    if len(uniq) < 2:
-        return out
-    pre = re.sub(r"\d+$", "", os.path.commonprefix(uniq))  # never cut through a number
-    if pre and all(len(u) > len(pre) for u in uniq) and (not pre[-1].isalnum() or all(u[len(pre)].isdigit() for u in uniq)):
-        out = {u: u[len(pre):] for u in uniq}
-    rest = list(out.values())
-    suf = os.path.commonprefix([r[::-1] for r in rest])[::-1]
-    if suf and not suf[0].isalnum() and all(len(r) > len(suf) for r in rest):
-        out = {u: v[: -len(suf)] for u, v in out.items()}
-    out = {u: v.strip(" _-.") or u for u, v in out.items()}
-    return out if len(set(out.values())) == len(uniq) else {u: u for u in uniq}
-
-
-CONDITION_SOURCES = ("auto", "name", "folder")
+CONDITION_SOURCES = GROUP_SOURCES
 
 
 def assign_conditions(pairs: list[Pairing], source: str = "auto") -> str:
-    """Set the condition, repetition and field number of every pair from its names.
+    """Set the condition, repetition and field number of every pair from its names (see ``core.naming``).
 
     ``source``: ``"name"`` (file names), ``"folder"`` (folder names) or ``"auto"``: file names when
     those of any one folder name more than one condition, folder names otherwise. Returns the
@@ -174,63 +119,17 @@ def assign_conditions(pairs: list[Pairing], source: str = "auto") -> str:
     """
     if source not in CONDITION_SOURCES:
         raise ValueError(f"conditions from {source!r}: use one of {', '.join(CONDITION_SOURCES)}")
-    folders: dict[str, list[Pairing]] = {}
-    for p in pairs:
-        folders.setdefault(str(Path(p.nuclear).parent), []).append(p)
-    parsed: dict[int, tuple[str, int | None]] = {}
-    several = False
-    for ps in folders.values():
-        names = _strip_shared([image_name(p.nuclear) for p in ps])
-        split = [split_field_number(n) for n in names]
-        for p, (base, n) in zip(ps, split):
-            parsed[id(p)] = (base, n)
-        several |= len({condition_key(b) for b, _ in split}) > 1
-    used = "name" if source == "name" or (source == "auto" and several) else "folder"
-    if used == "name":
-        reps = short_labels([Path(f).name for f in folders]) if len(folders) > 1 else {}
-        for f, ps in folders.items():
-            for p in ps:
-                p.condition, p.field_no = parsed[id(p)]
-                p.repetition = reps.get(Path(f).name, "1")
-    else:
-        parents = [Path(f).parent.name for f in folders]
-        reps = short_labels(parents) if len(set(parents)) > 1 else {}
-        for f, ps in folders.items():
-            for p in ps:
-                p.condition = Path(f).name
-                p.field_no = parsed[id(p)][1]
-                p.repetition = reps.get(Path(f).parent.name, "1")
-    unify_conditions(pairs)
-    return used
+    return assign_groups(pairs, lambda p: p.nuclear, image_name, source, "condition")
 
 
 def unify_conditions(pairs: list[Pairing]) -> None:
     """One spelling per condition: the first one met (repetitions often differ by a space)."""
-    first: dict[str, str] = {}
-    for p in pairs:
-        k = condition_key(p.condition)
-        if k:
-            p.condition = first.setdefault(k, p.condition)
+    unify_groups(pairs, "condition")
 
 
 def label_fields(pairs: list[Pairing]) -> None:
     """Readable, unique field ids: ``"vehicle #1"``, or ``"3 · vehicle #1"`` when there are several repetitions."""
-    several = len({p.repetition for p in pairs}) > 1
-    groups: dict[tuple[str, str], list[Pairing]] = {}
-    for p in pairs:
-        groups.setdefault((p.repetition, condition_key(p.condition)), []).append(p)
-    seen: set[str] = set()
-    for (rep, _k), ps in groups.items():
-        nums = [p.field_no for p in ps]
-        use = all(n is not None for n in nums) and len(set(nums)) == len(nums)
-        for i, p in enumerate(sorted(ps, key=lambda q: (q.field_no if use else 0, Path(q.nuclear).name)), start=1):
-            n = p.field_no if use else i
-            base = f"{p.condition or '(no condition)'} #{n}"
-            fid = f"{rep} · {base}" if several and rep else base
-            while fid in seen:  # same names in two folders of one repetition
-                fid += "'"
-            seen.add(fid)
-            p.field_id = fid
+    label_items(pairs, lambda p: p.nuclear, "condition", "field_id", "(no condition)")
 
 
 def role_from_name(path: str | Path) -> str:

@@ -4,6 +4,7 @@
 ``microscount bio translocation ...``        Bio & Cells: nuclear translocation (N/C ratio)
 ``microscount bio combine RESULTS ...``      one experiment from result folders analysed separately
 ``microscount materials porosity ...``       Materials & Mechanics: SEM porosity
+``microscount materials combine RESULTS ...`` one SEM experiment from result folders analysed separately
 ``microscount run settings.yaml``            repeat a saved analysis
 ``microscount modules`` / ``selftest``
 
@@ -26,7 +27,7 @@ def _expand(inputs: list[str], recursive: bool = True) -> list[Path]:
 
     out: list[Path] = []
     for s in inputs:
-        p = Path(s)
+        p = Path(s).absolute()  # settings.yaml records where the images are, wherever it is run from
         if p.is_dir():
             out += list_images(p, recursive=recursive)
         elif p.is_file() and is_supported(p):
@@ -163,9 +164,13 @@ def cmd_translocation(a) -> int:
         for p in pairs:
             print(f"{p.field_id}: {Path(p.nuclear).name} + {Path(p.target).name} [{p.confidence}] {p.note}")
     elif a.condition or a.repetition:
+        from .core.naming import label_items, number_from_id
+
         for sp in specs:
             sp.condition = a.condition or sp.condition
             sp.repetition = a.repetition or sp.repetition
+            sp.field_no = number_from_id(sp.field_id)
+        label_items(specs, lambda sp: sp.nuclear_path, "condition", "field_id", "(no condition)")
     if not specs:
         print("no fields to analyse", file=sys.stderr)
         return 2
@@ -258,10 +263,9 @@ def cmd_combine(a) -> int:
     if a.repetitions and len(a.repetitions) != len(a.folders):
         print("--repetitions: give one label per folder", file=sys.stderr)
         return 2
-    import datetime as _dt
+    from .core.report import default_combined_dir
 
-    out = Path(a.out) if a.out else Path(a.folders[0]).resolve().parent / (
-        "microscount_combined_" + _dt.datetime.now().strftime("%Y%m%d_%H%M%S"))
+    out = Path(a.out) if a.out else default_combined_dir(a.folders)
     res = combine_results(a.folders, design, out, a.repetitions)
     _print_experiment(res["experiment"])
     print(f"results written to {out}")
@@ -273,54 +277,203 @@ def cmd_combine(a) -> int:
 
 def _porosity_args(s: argparse.ArgumentParser) -> None:
     s.add_argument("inputs", nargs="*", help="SEM image files or folders")
-    s.add_argument("--config", help="settings.yaml saved by MicrosCount")
-    s.add_argument("--condition")
-    s.add_argument("--pixel-size", type=float, help="micrometres per pixel (MATLAB 'Resolution')")
+    s.add_argument("--config", help="settings.yaml saved by MicrosCount (its inputs are used unless you give images)")
+    s.add_argument("--pixel-size", type=float, help="micrometres per pixel for images whose file does not record it "
+                   "(MATLAB 'Resolution')")
+    s.add_argument("--ignore-file-pixel-size", action="store_true",
+                   help="use --pixel-size for every image, even when the file records its own")
     s.add_argument("--n-thresholds", type=int, help="MATLAB 'N' (default 4)")
-    s.add_argument("--crop-bottom", type=int, help="pixels to remove at the bottom (SEM data bar)")
+    s.add_argument("--threshold", type=float, metavar="GREY", help="fixed pore threshold instead of multithresh")
+    s.add_argument("--data-bar", metavar="auto|none|ROWS",
+                   help="SEM data bar at the bottom: auto = from the file or detected (default), none, or rows to remove")
+    s.add_argument("--crop-bottom", type=int, help="rows to remove at the bottom (same as --data-bar ROWS)")
+    s.add_argument("--edge-pores-out", action="store_true", help="leave pores cut by the image edge out of the sizes")
+    s.add_argument("--bright-pores", action="store_true", help="pores are brighter than the solid")
     s.add_argument("--out")
+    s.add_argument("--no-subfolders", action="store_true", help="only the images directly inside the given folders")
+    e = s.add_argument_group("experiment")
+    e.add_argument("--samples-from", choices=["auto", "name", "folder"],
+                   help="samples from file names or folder names (auto: file names when a folder holds several samples)")
+    e.add_argument("--sample", "--condition", dest="sample", help="sample label for all inputs")
+    e.add_argument("--repetition", help="repetition label for all inputs (default: from the folders)")
+    _sample_design_args(e)
+
+
+def _sample_design_args(e) -> None:
+    e.add_argument("--reference", metavar="SAMPLE", help="reference sample (percent changes and default comparisons)")
+    e.add_argument("--compare", nargs=2, action="append", metavar=("A", "B"),
+                   help="compare sample B with sample A (repeatable; default: every sample vs the reference)")
+    e.add_argument("--relative-to", nargs=2, action="append", metavar=("SAMPLE", "REFERENCE"),
+                   help="changes of SAMPLE relative to REFERENCE instead of the reference sample (repeatable)")
+    e.add_argument("--order", nargs="+", metavar="SAMPLE", help="order of the samples in tables and figures")
+
+
+def _apply_sample_design(s, a) -> None:
+    """Experiment options of the command line into PorositySettings or a GroupDesign."""
+    ref_attr = "reference_sample" if hasattr(s, "reference_sample") else "reference"
+    if a.reference is not None:
+        setattr(s, ref_attr, a.reference)
+    if a.compare:
+        s.comparisons = [list(c) for c in a.compare]
+    if a.relative_to:
+        s.references = {g: r for g, r in a.relative_to}
+    if a.order:
+        setattr(s, "sample_order" if hasattr(s, "sample_order") else "order", list(a.order))
 
 
 def cmd_porosity(a) -> int:
+    from .materials.experiment import ImageSpec, label_images, scan_sem_files
     from .materials.porosity import PorositySettings
     from .materials.report import default_output_dir, run_porosity
     from .modules import load_settings
 
     s = PorositySettings()
-    items: list[tuple[str, str]] = []
+    specs: list = []
     if a.config:
         an, s, inputs = load_settings(a.config)
         if an.key != "porosity":
             print(f"{a.config} holds settings for {an.title}, not SEM porosity", file=sys.stderr)
             return 2
-        items = [(i["image"], i.get("condition", "")) for i in inputs]
-    if a.inputs:
-        items = [(str(p), a.condition or p.parent.name) for p in _expand(a.inputs)]
+        specs = [ImageSpec(i["image"], sample=i.get("sample") or i.get("condition", "") or "",
+                           repetition=str(i.get("repetition") or "1"), image_id=i.get("image_id") or "",
+                           pixel_size_um=i.get("pixel_size_um")) for i in inputs]
+    if a.samples_from:
+        s.samples_from = a.samples_from
     if a.pixel_size:
         s.pixel_size_um = a.pixel_size
+    if a.ignore_file_pixel_size:
+        s.use_metadata_pixel_size = False
     if a.n_thresholds:
         s.n_thresholds = a.n_thresholds
+    if a.threshold is not None:
+        s.pore_threshold_value = a.threshold
     if a.crop_bottom is not None:
-        s.crop_bottom_px = a.crop_bottom
-    if not items:
+        s.data_bar, s.crop_bottom_px = ("manual", a.crop_bottom) if a.crop_bottom > 0 else ("none", 0)
+    if a.data_bar:
+        v = a.data_bar.strip().lower()
+        if v in ("auto", "none"):
+            s.data_bar = v
+        elif v.isdigit():
+            s.data_bar, s.crop_bottom_px = "manual", int(v)
+        else:
+            print("--data-bar: auto, none or a number of rows", file=sys.stderr)
+            return 2
+    if a.edge_pores_out:
+        s.exclude_edge_pores = True
+    if a.bright_pores:
+        s.pores_are_bright = True
+    _apply_sample_design(s, a)
+    if a.inputs:
+        specs = scan_sem_files(_expand(a.inputs, recursive=not a.no_subfolders), samples_from=s.samples_from)
+        if a.sample or a.repetition:
+            for sp in specs:
+                sp.sample = a.sample or sp.sample
+                sp.repetition = a.repetition or sp.repetition
+            label_images(specs)
+        for sp in specs:
+            px = f"{sp.file_pixel_size_um:.4g} µm/px ({sp.file_pixel_size_source})" if sp.file_pixel_size_um else ""
+            print(f"{sp.image_id}: {Path(sp.path).name} {px}".rstrip())
+    elif a.sample or a.repetition:
+        from .core.naming import number_from_id
+
+        for sp in specs:
+            sp.sample = a.sample or sp.sample
+            sp.repetition = a.repetition or sp.repetition
+            sp.field_no = number_from_id(sp.image_id)
+        label_images(specs)
+    if not specs:
         print("no images to analyse", file=sys.stderr)
         return 2
-    out = Path(a.out) if a.out else default_output_dir([items[0][0]])
-    res = run_porosity(items, s, out, progress=_progress)
+    out = Path(a.out) if a.out else default_output_dir([specs[0].path])
+    res = run_porosity(specs, s, out, progress=_progress)
+    _print_samples(res["experiment"])
     for r in res["results"]:
-        sm = r.summary
-        print(f"{sm['image']}: porosity {sm['porosity']:.4f}, {sm['n_pores']} pores, mean radius {sm['mean_pore_radius_um']:.3f} µm")
+        for w in r.warnings:
+            print(f"{r.image_id}: {w}", file=sys.stderr)
     for e in res["errors"]:
         print("error:", e, file=sys.stderr)
     print(f"results written to {out}")
     return 0 if res["results"] else 1
 
 
+def _print_samples(ms) -> None:
+    several = len(ms.repetitions) > 1
+    m_por, m_d = ms.measures[0], ms.measures[1]
+    for row in ms.summary:
+        line = (f"{row['sample']}: {row['n_images']} image(s)"
+                + (f" in {row['n_repetitions']} repetitions" if several else "")
+                + f"; porosity {_fmt(row.get(m_por.key + '_mean'))} ± {_fmt(row.get(m_por.key + '_sd'))} %"
+                + f"; mean pore diameter {_fmt(row.get(m_d.key + '_mean'))} ± {_fmt(row.get(m_d.key + '_sd'))} {m_d.unit}")
+        ch = row.get(m_por.key + "_change_pct")
+        if row.get("reference") and row["reference"] != row["sample"] and isinstance(ch, float) and math.isfinite(ch):
+            line += f"; porosity {ch:+.1f}% vs {row['reference']}"
+        print(line)
+    for c in ms.comparisons:
+        if c["key"] not in (m_por.key, m_d.key):
+            continue
+        change = c["difference_pct"]
+        change = f"{change:+.4g}%" if isinstance(change, float) and math.isfinite(change) else "–"
+        if c["repetition"] == "all":
+            print(f"{c['measure']}: {c['sample_b']} vs {c['sample_a']}, all repetitions: change {change} "
+                  f"({c['per_repetition']}); paired p {_fmt(c['paired_p'])}")
+        else:
+            print(f"{c['measure']}: {c['sample_b']} vs {c['sample_a']}{', repetition ' + c['repetition'] if several else ''}"
+                  f": change {change}, Welch p {_fmt(c['welch_p'])}")
+    for note in ms.notes:
+        print("note:", note)
+
+
+def _materials_combine_args(c: argparse.ArgumentParser) -> None:
+    c.add_argument("folders", nargs="+", help="SEM result folders written by MicrosCount (with per_image.csv)")
+    c.add_argument("--repetitions", nargs="+", metavar="LABEL", help="one repetition label per folder")
+    c.add_argument("--config", help="settings.yaml or combine.yaml to take the experiment design from")
+    _sample_design_args(c)
+    c.add_argument("--bins", type=int, default=None, help="pore-size distribution bins (default 25)")
+    c.add_argument("--out", help="output folder")
+
+
+def cmd_materials_combine(a) -> int:
+    from .core.experiment import GroupDesign
+    from .materials.experiment import design_from_settings
+    from .materials.report import combine_results
+
+    design, bins = GroupDesign(), 25
+    if a.config:
+        from .core.report import read_settings_yaml
+
+        doc = read_settings_yaml(a.config)
+        if "design" in doc:
+            design = GroupDesign.from_dict(doc["design"])
+            bins = int(doc.get("histogram_bins") or bins)
+        elif "settings" in doc:
+            from .materials.porosity import PorositySettings
+
+            ps = PorositySettings.from_dict(doc["settings"])
+            design, bins = design_from_settings(ps), ps.histogram_bins
+    _apply_sample_design(design, a)
+    missing = [f for f in a.folders if not (Path(f) / "per_image.csv").exists()]
+    if missing:
+        print("not a MicrosCount SEM result folder (no per_image.csv): " + ", ".join(missing), file=sys.stderr)
+        return 2
+    if a.repetitions and len(a.repetitions) != len(a.folders):
+        print("--repetitions: give one label per folder", file=sys.stderr)
+        return 2
+    from .core.report import default_combined_dir
+
+    out = Path(a.out) if a.out else default_combined_dir(a.folders)
+    res = combine_results(a.folders, design, out, a.repetitions, a.bins or bins)
+    _print_samples(res["experiment"])
+    print(f"results written to {out}")
+    return 0
+
+
 COMMANDS = {"translocation": (_translocation_args, cmd_translocation),
             "porosity": (_porosity_args, cmd_porosity)}
 # module commands that are not analyses of images
 EXTRA = {"bio": {"combine": ("one experiment from result folders analysed separately (e.g. one per repetition)",
-                             _combine_args, cmd_combine)}}
+                             _combine_args, cmd_combine)},
+         "materials": {"combine": ("one SEM experiment from result folders analysed separately (e.g. one per repetition)",
+                                   _materials_combine_args, cmd_materials_combine)}}
 
 
 def cmd_run(a) -> int:
@@ -331,11 +484,20 @@ def cmd_run(a) -> int:
     except (OSError, ValueError) as exc:
         print(exc, file=sys.stderr)
         return 2
-    add_args, run = COMMANDS[an.key]
+    from .core.report import read_settings_yaml
+
+    doc = read_settings_yaml(a.settings)
+    out = ["--out", a.out] if a.out else []
+    if doc.get("combined_from"):  # a combine.yaml: combine the same result folders again
+        _help, add_args, run = EXTRA[an.module]["combine"]
+        reps = ["--repetitions", *[str(r) for r in doc["repetitions"]]] if doc.get("repetitions") else []
+        args = [*[str(f) for f in doc["combined_from"]], "--config", a.settings, *reps, *out]
+    else:
+        add_args, run = COMMANDS[an.key]
+        args = ["--config", a.settings, *out]
     p = argparse.ArgumentParser(add_help=False)
     add_args(p)
-    b = p.parse_args(["--config", a.settings] + (["--out", a.out] if a.out else []))
-    return run(b)
+    return run(p.parse_args(args))
 
 
 def cmd_modules(_a) -> int:

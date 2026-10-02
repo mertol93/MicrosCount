@@ -7,7 +7,7 @@ MicrosCount has two modules:
 | Module | Analysis | What it measures | Typical images |
 |---|---|---|---|
 | **Bio & Cells** | Nuclear translocation | Nuclear/cytoplasmic (N/C) intensity ratio of a protein (e.g. NF-κB p65/RelA) for every cell and every field, summarised over conditions and repetitions, with fold changes, responders and comparisons | Fluorescence or confocal: a nuclear stain (DAPI, Hoechst) + a target channel |
-| **Materials & Mechanics** | SEM porosity | Porosity and pore-size distribution | Scanning electron micrographs of membranes, rocks, foams… |
+| **Materials & Mechanics** | SEM porosity | Porosity, pore sizes, pore-size distribution and pore density of every image, summarised over samples and repetitions, with changes against a reference sample and comparisons | Scanning electron micrographs of membranes, rocks, foams… |
 
 It reads **TIFF, PNG and JPEG** (8/16-bit, greyscale, single-colour and merged RGB exports, multi-channel TIFF) and installs on **Windows, macOS and Linux**.
 
@@ -59,15 +59,16 @@ Python users can instead run `pip install git+https://github.com/mertol93/micros
 6. **Preview** a field. Measured nuclei are outlined in cyan, their cytoplasm is shaded magenta, the cell-free area used for Background_Mean is tinted yellow, and nuclei that are not measured are outlined in red. Hover over a cell to see its values.
 7. **Analyse all fields.** Results open in the *Results* tab and are saved to a new folder next to your images.
 
-Repetitions analysed at different times can be put together afterwards with **Combine saved results…**: choose the folder that holds their result folders.
+Repetitions analysed at different times can be put together afterwards with **Combine saved results…**: choose the folder that holds their result folders. A result folder of one repetition becomes one repetition, named after the folder; conditions of one repetition analysed separately are joined by their repetition labels.
 
 ### Conditions and repetitions
 
 - **Automatic (default).** If the file names in a folder name several conditions, as in a microscope export (`Experiment_vehicle-1_ch00.tif`, `Experiment_stimulus 30 min-2_ch00.tif` …), the condition is the file name without the shared experiment name before the first `_` and without the trailing field number, and **each folder is one repetition**. Otherwise **each folder is a condition** and its parent folder the repetition.
 - **File names** or **Folder names** force one of the two.
 - A field number is a number at the end of the name after `-`, `_` or `#`, in brackets, or after *field*/*pos*; a number after a plain space (`dose 10`) stays part of the condition.
-- Spellings that differ only in case, spaces or punctuation (`stimulus 30 min`, `Stimulus-30min`) are treated as one condition, so repetitions line up.
-- Repetition labels are shortened to what tells the folders apart (`…EXPERIMENT-3`, `…EXPERIMENT-4` → `3`, `4`).
+- Spellings that differ only in case, spaces or separators (`stimulus 30 min`, `Stimulus-30min`) are treated as one condition, so repetitions line up; signs count (`drug +` and `drug -` are two conditions).
+- Repetition labels are shortened to what tells the folders apart (`…EXPERIMENT-3`, `…EXPERIMENT-4` → `3`, `4`); folders with the same name (`day1/SEM`, `day2/SEM`) are told apart by the folders above them.
+- A repetition folder that holds only one condition is read the way the other folders are (`Experiment_vehicle-1` → `vehicle`).
 
 ### How an experiment is summarised
 
@@ -105,15 +106,58 @@ Every field is checked as it is measured, and warnings appear in the preview, th
 
 ## Materials & Mechanics: SEM porosity
 
-1. **Add SEM images.** Pores should be the darkest regions; tick *Pores are bright* otherwise.
-2. **Set the pixel size** in µm/px from the micrograph's scale bar. If the image has a microscope data bar, remove it with *Crop at bottom*.
-3. **Preview** an image and check the overlay, the binary segmentation, the MATLAB-style depth map and the pore segmentation.
-4. **Analyse all images.** You get:
-   - porosity, pore count, and mean/SD/median equivalent pore radius per image and per condition;
-   - a `pores.csv` table of every pore;
-   - the MATLAB-style images for each micrograph: binary segmentation, depth map, pore-space segmentation, and the pore-size histogram.
+### Quick start
+
+1. **Add SEM images.** Use *Add files…* or *Add folder…*, or drag files or folders onto the table. Pores should be the darkest regions; tick *Pores are bright* otherwise.
+2. **Check the samples and repetitions.** They are read from the names (see [Samples and repetitions](#samples-and-repetitions)) and can be edited in the table or with *Set sample…* / *Set repetition…*.
+3. **Check the pixel size of every image.** FEI / Thermo Fisher and Zeiss SEM TIFFs record it, as do calibrated TIFFs (ImageJ, OME); the table shows where each value comes from. For other images, set a *Default pixel size* (the MATLAB script's *Resolution*), type it into the table, or measure the scale bar with *From scale bar…*. A bare TIFF resolution tag, which many programs write, counts only when there is no default, and print resolutions (72–2400 dpi) are ignored. Without a pixel size, sizes are given in pixels.
+4. **Data bar.** The information bar at the bottom of an SEM image is left out automatically: its height is read from the file (FEI / Thermo Fisher) or found as a block of flat graphic rows. Choose *None* or a number of rows to override this.
+5. **Describe the experiment** (optional). Choose the **reference sample** (e.g. the unmodified membrane), add **comparisons**, set the order of the samples and, if needed, a different reference for a sample's changes. Without comparisons, every sample is compared with the reference.
+6. **Preview** an image. Pores are shaded red with yellow outlines and the left-out data bar is tinted blue; the original, the MATLAB-style depth map, the binary segmentation and the pore segmentation are one click away. The preview lists the porosity, pore count, pore diameters, threshold, pixel size and data bar, and any warnings.
+7. **Analyse all images.** Results open in the *Results* tab and are saved to a new folder next to your images.
+
+Repetitions analysed at different times can be put together afterwards with **Combine saved results…**: choose the folder that holds their result folders. A result folder of one repetition becomes one repetition, named after the folder; samples of one repetition analysed separately are joined by their repetition labels.
 
 ![Materials & Mechanics: SEM porosity preview](docs/images/porosity_preview.png)
+
+### Samples and repetitions
+
+- **Automatic (default).** If the file names in a folder name several samples (`Membrane_neat_01.tif`, `Membrane_filled_01.tif` …), the sample is the file name without the parts all names share and without the trailing image number, and **each folder is one repetition** (an independently made membrane or batch). Otherwise **each folder is a sample** and its parent folder the repetition.
+- **File names** or **Folder names** force one of the two. The naming rules are those of Bio & Cells (see [Conditions and repetitions](#conditions-and-repetitions)).
+
+### How an experiment is summarised
+
+| Level | Value |
+|---|---|
+| **Image** | porosity; pore count; mean, median, d10, d90, area-weighted mean and largest equivalent pore diameter; pore density; mean circularity |
+| **Sample, in each repetition** | mean ± SD of its images; change = 100 × (value ÷ value of its reference sample − 1) in the same repetition |
+| **Sample, across repetitions** | mean ± SD of the repetition values (with one repetition: of the images) |
+| **Comparison** | in each repetition: difference and Welch's t-test on the image values; across repetitions: the change in each repetition, whether its direction agrees, and a paired t-test on the repetition values when there are at least three repetitions |
+| **Pore-size distribution** | the share of pores and of pore area in each diameter bin, pooled over the images of a sample in each repetition and in all repetitions |
+
+Images of one membrane are technical replicates, so the within-repetition test is exploratory; the repetitions are the independent replicates. Changes in porosity are relative (10% → 12% is +20%); the difference in percentage points is in the *Comparisons* sheet.
+
+### What you get
+
+| File | Contents |
+|---|---|
+| `results.xlsx` | *Read me* (what every number means), *Summary*, *Comparisons*, *Samples*, *Images*, *Pores*, *Distribution*, *Settings* and *How to cite* in one workbook |
+| `summary.csv` | One row per sample: mean ± SD of every measure and its change against the reference |
+| `comparisons.csv` | Each comparison of each measure, in each repetition and across repetitions |
+| `per_sample.csv` | One row per repetition and sample, with the pores of its images pooled |
+| `per_image.csv` | One row per image: every measure, the pixel size and where it came from, the data bar, the thresholds, the SEM settings recorded in the file and any warnings |
+| `per_pore.csv` | One row per pore: position, area, equivalent diameter, perimeter, circularity, and whether it is cut by the image edge |
+| `pore_size_distribution.csv` | Pores per diameter bin (number, %, cumulative %) and area % for each sample, per repetition and pooled |
+| `summary.png`, `distribution.png` | Porosity and mean pore diameter per sample (images coloured by repetition, with mean ± SD); pore-size distributions and their cumulative curves |
+| `images/*.png` | For every micrograph: the overlay, the MATLAB script's binary segmentation, depth map and pore-space segmentation, and its pore-size distribution |
+| `settings.yaml` | Every setting, the experiment design and the input files. Reopen it with *File → Open settings / previous analysis* or `microscount run settings.yaml` to repeat the run. |
+| `CITATION.txt` | How to cite |
+
+![Materials & Mechanics: results of two samples in two repetitions](docs/images/porosity_results.png)
+
+### Checks
+
+Every image is checked as it is measured, and warnings appear in the preview, the log and the *Images* sheet: a porosity above 60% or below 0.5% (are the pores the darkest class, and is the number of thresholds right?), fewer than 20 pores, more than a quarter of the pores cut by the image edge, one pore covering more than a tenth of the image, saturated pixels (charging), low contrast and JPEG input. The summary notes images without a pixel size and samples whose images were taken at different pixel sizes.
 
 ---
 
@@ -150,20 +194,25 @@ This is a Python port of `SEM_Porosity.m` by Arash Rabbani (BSD-3-Clause), the s
 2. `multithresh(I, N)`, including MATLAB's `fminsearch` search for N ≥ 3 (an *exhaustive* global search is available as an option);
 3. pores are the darkest class;
 4. `bwmorph(…,'majority')`;
-5. a city-block distance map, `medfilt2`, and an 8-connected watershed to separate touching pores;
+5. a city-block distance map, `medfilt2`, and an 8-connected watershed from its regional minima to separate touching pores (Meyer's flooding in MATLAB's pixel order, so the watershed lines fall where MATLAB puts them);
 6. `bwareaopen(…, 9)`;
 7. equivalent pore radius = pixel size × √(area/π);
 8. porosity = pore fraction before the watershed split.
 
-Optional additions, all off by default:
-- cropping an SEM data bar;
+Around this core, for images straight from the microscope:
+- the pixel size of every image: from the SEM metadata or the TIFF calibration, typed, or a default;
+- the SEM data bar, left out of every calculation;
+- per pore: equivalent diameter, perimeter and circularity (ImageJ's traced perimeter); per image: diameter statistics, pore density and the checks above.
+
+Options, all off by default so that results match the MATLAB script:
+- a fixed pore threshold instead of `multithresh`;
 - counting more than one dark class as pore;
 - leaving edge-cut pores out of the size statistics;
 - bright pores.
 
 ### Input handling
 
-- **TIFF:** 8/16/32-bit, multi-page, multi-channel (ImageJ, OME), RGB and palette. Pixel size is read from OME or ImageJ metadata or the resolution tags. Z/T stacks are max-projected.
+- **TIFF:** 8/16/32-bit, multi-page, multi-channel (ImageJ, OME), RGB and palette. Pixel size is read from FEI / Thermo Fisher or Zeiss SEM metadata, OME or ImageJ metadata, or the resolution tags. Z/T stacks are max-projected.
 - **PNG / JPEG:**
   - greyscale, RGB, palette (decoded through the palette) and 16-bit PNG, including 16-bit RGB;
   - single-colour exports (e.g. a blue DAPI snapshot) are recognised and the populated channel is used;
@@ -182,7 +231,8 @@ Optional additions, all off by default:
 | Paper method with the current *Default* threshold vs ImageJ 1.54 on two 2048 × 2048 confocal fields | pixel-identical ROIs; identical means and ratios |
 | Rolling ball (*Subtract Background*) vs ImageJ 1.54, radius 30, 40 and 50 px, on two confocal fields | **pixel-identical** |
 | *Analyze Particles* area, perimeter and circularity vs ImageJ 1.54 (655 and 782 particles) | **identical** |
-| SEM porosity vs the original MATLAB outputs (Rabbani's sample images) | binary segmentation **pixel-identical**; porosity identical (0.09945, 0.19567); pore count 330/330 and 454/453; mean pore radius within 1% |
+| SEM porosity vs the original MATLAB outputs (Rabbani's sample images, *Resolution* 0.459 µm) | binary segmentation and pore segmentation after the watershed split **pixel-identical**; porosity (0.09945, 0.19567), pore count (330, 453) and mean pore radius identical |
+| SEM watershed vs Meyer's flooding written out pixel by pixel, on 120 random images | identical |
 | Per-cell protocol on synthetic cells with a known N/C of 0.6, 1.0 and 2.5 | per-cell median 0.63, 0.99 and 2.26; the paper method gives 0.71, 1.03 and 2.18 (pulled towards 1) |
 
 The ImageJ comparisons can be re-run with the Java programs in [`validation/`](validation). The unit tests (`pytest`) check stored ImageJ and MATLAB reference values, and `microscount selftest` runs a quick check of the main steps on any computer.
@@ -199,16 +249,24 @@ microscount bio translocation rep1/ rep2/ rep3/ --control "vehicle" \
 microscount bio translocation path/to/images --method paper          # Noursadeghi et al. 2008 only
 microscount bio translocation path/to/images --size 50-inf --circularity 0.2-1 --rolling-ball 30
 microscount bio combine results_rep1/ results_rep2/ --control "vehicle"   # repetitions analysed separately
-microscount run results/settings.yaml                                 # repeat a saved analysis
+microscount run results/settings.yaml                                 # repeat a saved analysis (or a combine.yaml)
 
 # Materials & Mechanics: SEM porosity
-microscount materials porosity path/to/sem --pixel-size 0.459 --n-thresholds 4 --crop-bottom 60
+microscount materials porosity path/to/sem --reference "neat" --out results   # pixel sizes from the SEM files
+microscount materials porosity batch1/ batch2/ batch3/ --pixel-size 0.459 --reference "neat" \
+    --compare "neat" "filled" --out results
+microscount materials porosity path/to/sem --pixel-size 0.459 --n-thresholds 4 --data-bar 60
+microscount materials combine results_batch1/ results_batch2/ --reference "neat"
 
 microscount modules      # list the modules and analyses
 microscount selftest
 ```
 
-Experiment options: `--conditions-from auto|name|folder`, `--repetition`, `--control`, `--compare A B` (repeatable), `--reference CONDITION REFERENCE` (repeatable), `--order`, `--responder-percentile`, `--keep-failed-paper-fields`, `--no-subfolders`. `microscount translocation` and `microscount porosity` remain as shortcuts.
+Bio & Cells options: `--conditions-from auto|name|folder`, `--repetition`, `--control`, `--compare A B` (repeatable), `--reference CONDITION REFERENCE` (repeatable), `--order`, `--responder-percentile`, `--keep-failed-paper-fields`, `--no-subfolders`.
+
+SEM porosity options: `--pixel-size` (for images that record none), `--ignore-file-pixel-size`, `--data-bar auto|none|ROWS`, `--n-thresholds`, `--threshold GREY`, `--edge-pores-out`, `--bright-pores`, `--samples-from auto|name|folder`, `--sample`, `--repetition`, `--reference`, `--compare A B` and `--relative-to SAMPLE REFERENCE` (repeatable), `--order`, `--no-subfolders`.
+
+`microscount translocation` and `microscount porosity` remain as shortcuts.
 
 ## Building from source
 
@@ -221,7 +279,7 @@ microscount            # opens the GUI
 
 Installers are built with PyInstaller by [`.github/workflows/build.yml`](.github/workflows/build.yml) on GitHub's Windows, macOS and Linux runners. Each frozen app runs its self-test and a headless GUI start before it is packaged. To build locally, run `packaging/build_windows.ps1`, `packaging/build_macos.sh` or `packaging/build_linux.sh`.
 
-The code is organised by module: `microscount/bio` (nuclear translocation, file pairing, experiment summaries), `microscount/materials` (SEM porosity), `microscount/core` (image reading, thresholds, the ImageJ routines, figures and tables), `microscount/gui` and `microscount/cli.py`. New analyses are registered in `microscount/modules.py`.
+The code is organised by module: `microscount/bio` (nuclear translocation, file pairing, experiment summaries), `microscount/materials` (SEM porosity, sample summaries), `microscount/core` (image reading, thresholds, the ImageJ routines, naming rules, experiment statistics, figures and tables), `microscount/gui` and `microscount/cli.py`. New analyses are registered in `microscount/modules.py`.
 
 **Releasing:** bump `__version__` in `src/microscount/_version.py` (and `version` in `CITATION.cff`), then push to `main`. CI tests the code, builds all installers and publishes release `v<version>` with the installers attached.
 

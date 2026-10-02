@@ -30,6 +30,27 @@ def default_output_dir(inputs: list[str | Path]) -> Path:
     return base / f"microscount_results_{stamp}"
 
 
+def default_combined_dir(folders: list[str | Path]) -> Path:
+    """A new folder for combined results, in the folder that holds all the result folders."""
+    import os
+
+    parents = [str(Path(f).resolve().parent) for f in folders]
+    try:
+        base = Path(os.path.commonpath(parents))
+    except ValueError:  # different drives
+        base = Path(parents[0])
+    return base / ("microscount_combined_" + _dt.datetime.now().strftime("%Y%m%d_%H%M%S"))
+
+
+def find_result_folders(root: str | Path, marker: str) -> list[Path]:
+    """Result folders (holding ``marker``, e.g. ``per_image.csv``) at most two levels below ``root``,
+    without combined results, which repeat the folders they were made from."""
+    root = Path(root)
+    found = {p.parent for pattern in (marker, f"*/{marker}", f"*/*/{marker}") for p in root.glob(pattern)}
+    return sorted(f for f in found
+                  if not (f / "combine.yaml").exists() and not f.name.lower().startswith("microscount_combined"))
+
+
 def _safe(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_")[:80] or "image"
 

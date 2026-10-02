@@ -22,9 +22,7 @@ Everything works on plain rows (dicts), so results saved by earlier runs can be 
 
 from __future__ import annotations
 
-import csv
 import math
-import warnings
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -77,96 +75,12 @@ class ExperimentSummary:
     notes: list[str]
 
 
-# ---------------------------------------------------------------------- helpers
+# ---------------------------------------------------------------------- helpers (shared with other modules)
 
-
-def _f(v) -> float:
-    try:
-        x = float(v)
-    except (TypeError, ValueError):
-        return NAN
-    return x
-
-
-def _true(v) -> bool:
-    if isinstance(v, str):
-        return v.strip().lower() in ("true", "1", "yes")
-    return bool(v)
-
-
-def _mean_sd(v) -> tuple[float, float, float]:
-    v = np.asarray([x for x in v if math.isfinite(x)], dtype=np.float64)
-    if v.size == 0:
-        return NAN, NAN, NAN
-    sd = float(v.std(ddof=1)) if v.size > 1 else NAN
-    return float(v.mean()), sd, (sd / math.sqrt(v.size) if v.size > 1 else NAN)
-
-
-def _welch(a, b) -> tuple[float, float]:
-    from scipy import stats
-
-    a = [x for x in a if math.isfinite(x)]
-    b = [x for x in b if math.isfinite(x)]
-    if len(a) < 2 or len(b) < 2 or (np.ptp(a) == 0 and np.ptp(b) == 0):
-        return NAN, NAN
-    with warnings.catch_warnings():  # identical values in one group: scipy warns, the test is still defined
-        warnings.simplefilter("ignore", RuntimeWarning)
-        r = stats.ttest_ind(a, b, equal_var=False)
-    return float(r.statistic), float(r.pvalue)
-
-
-def _paired(a, b) -> tuple[float, float]:
-    from scipy import stats
-
-    pairs = [(x, y) for x, y in zip(a, b) if math.isfinite(x) and math.isfinite(y)]
-    if len(pairs) < 3:
-        return NAN, NAN
-    d = np.array([y - x for x, y in pairs])
-    if np.ptp(d) == 0:
-        return NAN, NAN
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        r = stats.ttest_rel([p[1] for p in pairs], [p[0] for p in pairs])
-    return float(r.statistic), float(r.pvalue)
-
-
-def _stats(v, prefix: str) -> dict:
-    v = np.asarray([x for x in v if math.isfinite(x)], dtype=np.float64)
-    if v.size == 0:
-        return {f"median_{prefix}": NAN, f"q1_{prefix}": NAN, f"q3_{prefix}": NAN, f"mean_{prefix}": NAN,
-                f"sd_{prefix}": NAN}
-    return {
-        f"median_{prefix}": float(np.median(v)),
-        f"q1_{prefix}": float(np.percentile(v, 25)),
-        f"q3_{prefix}": float(np.percentile(v, 75)),
-        f"mean_{prefix}": float(v.mean()),
-        f"sd_{prefix}": float(v.std(ddof=1)) if v.size > 1 else NAN,
-    }
-
-
-def _signed_pct(v: float) -> str:
-    return "–" if not math.isfinite(v) else f"{v:+.1f}%"
-
-
-def order_conditions(names: list[str], preferred: list[str] | None = None) -> list[str]:
-    """Conditions in the preferred order first (spelling-insensitive), then as met."""
-    seen: dict[str, str] = {}
-    for n in names:
-        seen.setdefault(condition_key(n), n)
-    out = []
-    for p in preferred or []:
-        k = condition_key(p)
-        if k in seen and seen[k] not in out:
-            out.append(seen[k])
-    out += [n for n in seen.values() if n not in out]
-    return out
-
-
-def order_repetitions(reps: list[str]) -> list[str]:
-    uniq = list(dict.fromkeys(reps))
-    if all(r.strip().lstrip("-").replace(".", "", 1).isdigit() for r in uniq):
-        return sorted(uniq, key=float)
-    return uniq
+from ..core.experiment import (  # noqa: E402
+    describe as _stats, mean_sd as _mean_sd, order_groups as order_conditions, order_repetitions, paired as _paired,
+    read_csv as _read_csv, signed_pct as _signed_pct, to_float as _f, truthy as _true, welch as _welch,
+)
 
 
 # ---------------------------------------------------------------------- summary
@@ -353,11 +267,6 @@ def summarise_experiment(field_rows: list[dict], cell_rows: list[dict] | None,
 # ---------------------------------------------------------------------- saved results
 
 
-def _read_csv(path: Path) -> list[dict]:
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        return list(csv.DictReader(f))
-
-
 def load_result_folder(folder: str | Path, repetition: str | None = None) -> tuple[list[dict], list[dict]]:
     """Field and cell rows of a MicrosCount result folder (``per_field.csv``, ``per_cell.csv``)."""
     folder = Path(folder)
@@ -368,29 +277,21 @@ def load_result_folder(folder: str | Path, repetition: str | None = None) -> tup
             if repetition is not None:
                 r["repetition"] = repetition
             elif not str(r.get("repetition", "")).strip():
-                r["repetition"] = folder.name
+                r["repetition"] = "1"
     return fr, cr
 
 
 def combine_result_folders(folders: list[str | Path], design: ExperimentDesign | None = None,
                            repetitions: list[str] | None = None) -> tuple[ExperimentSummary, list[dict], list[dict]]:
     """Summarise several result folders (e.g. one per repetition) as one experiment."""
-    from .pairing import short_labels
+    from ..core.experiment import combine_repetitions
 
     folders = [Path(f) for f in folders]
-    labels = repetitions or [None] * len(folders)
-    all_f, all_c = [], []
-    for f, lab in zip(folders, labels):
-        fr, cr = load_result_folder(f, lab)
-        # a folder that holds a single repetition "1" (analysed alone) is its own repetition
-        reps = {r["repetition"] for r in fr}
-        if lab is None and reps <= {"1", ""} and len(folders) > 1:
-            for r in fr + cr:
-                r["repetition"] = f.name
-        all_f += fr
-        all_c += cr
-    if repetitions is None and len(folders) > 1:
-        short = short_labels([r["repetition"] for r in all_f])
-        for r in all_f + all_c:
-            r["repetition"] = short.get(r["repetition"], r["repetition"])
-    return summarise_experiment(all_f, all_c, design), all_f, all_c
+    loaded = [load_result_folder(f) for f in folders]
+    notes = combine_repetitions(folders, [fr for fr, _ in loaded], [cr for _, cr in loaded], "condition", repetitions,
+                                "field")
+    all_f = [r for fr, _ in loaded for r in fr]
+    all_c = [r for _, cr in loaded for r in cr]
+    exp = summarise_experiment(all_f, all_c, design)
+    exp.notes[:0] = notes
+    return exp, all_f, all_c

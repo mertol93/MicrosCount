@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 import tifffile
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from microscount.core.imageio import ChannelError, ImageLoadError, load_image, measure_scale_bar
 
