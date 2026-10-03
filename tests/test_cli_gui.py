@@ -218,7 +218,8 @@ def test_gui_materials_experiment(tmp_path, monkeypatch):
         for _ in range(10):
             app.processEvents()
 
-    p.add_paths([str(root)])
+    p.path_box.edit.setText(f'"{root}"')  # a pasted path, quotes and all: the folder and its subfolders
+    p.path_box.submit()
     wait()
     assert len(p.specs) == 9 and {s.repetition for s in p.specs} == {"1", "2"}
     assert {s.sample for s in p.specs} == {"CA", "CA-CNF1"}
@@ -242,7 +243,8 @@ def test_gui_materials_experiment(tmp_path, monkeypatch):
     sample = p.specs[png].sample
     p.table.item(png, 1).setText("X")
     p.samples_from.setCurrentIndex(p.samples_from.findData("folder"))
-    assert p.specs[png].sample == "X" and {s.sample for s in p.specs} - {"X"} == {"batch-1", "batch-2"}
+    assert p.specs[png].sample == "X" and {s.sample for s in p.specs} - {"X"} == {"data"}  # batch-n: repetitions
+    assert {s.repetition for s in p.specs} == {"1", "2"}
     p.samples_from.setCurrentIndex(p.samples_from.findData("auto"))
     p.table.item(png, 1).setText(sample)
     assert {s.sample for s in p.specs} == {"CA", "CA-CNF1"}
@@ -251,7 +253,7 @@ def test_gui_materials_experiment(tmp_path, monkeypatch):
     from microscount.materials.porosity import PorositySettings
 
     p.apply_settings(PorositySettings(samples_from="folder"))  # settings opened without their images
-    assert {q.sample for i, q in enumerate(p.specs) if i != png} == {"batch-1", "batch-2"}
+    assert {q.sample for i, q in enumerate(p.specs) if i != png} == {"data"}
     p.apply_settings(s)
     assert {q.sample for q in p.specs} == {"CA", "CA-CNF1"} and p.get_settings().reference_sample == "CA"
     out = tmp_path / "outs" / "run"

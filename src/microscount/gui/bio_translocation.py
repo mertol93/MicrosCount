@@ -23,8 +23,8 @@ from ..core.render import translocation_overlay
 from ..core.thresholds import METHOD_LABELS
 from ..bio.translocation import FieldSpec, TranslocationSettings, analyse_field
 from .common import (
-    IMAGE_FILTER, DropTable, FitImageLabel, ImageViewer, LogView, MplCanvas, ScaleBarDialog, Task, expand_paths, fill_table,
-    message, open_folder, start_task,
+    IMAGE_FILTER, DropTable, FitImageLabel, ImageViewer, LogView, MplCanvas, PathBox, ScaleBarDialog, Task, expand_paths,
+    fill_table, message, open_folder, start_task,
 )
 
 CHANNELS = [("Automatic", "auto"), ("Blue", "blue"), ("Green", "green"), ("Red", "red"),
@@ -132,8 +132,13 @@ class TranslocationPage(QWidget):
                            ("Remove", self.remove_selected), ("Clear", self.clear_all)):
             b = QPushButton(text)
             b.clicked.connect(slot)
+            if text == "Add folder…":
+                b.setToolTip("Every image in the folder and in all its subfolders, at any depth")
             row.addWidget(b)
         v1.addLayout(row)
+        self.path_box = PathBox()
+        self.path_box.paths.connect(self.add_paths)
+        v1.addWidget(self.path_box)
         self.table = DropTable(0, 6)
         self.table.setHorizontalHeaderLabels(["Field", "Condition", "Repetition", "Nuclear stain image", "Target image",
                                               "Pairing"])
@@ -173,7 +178,8 @@ class TranslocationPage(QWidget):
         row.addWidget(self.cond_from)
         row.addStretch(1)
         v1.addLayout(row)
-        hint = QLabel("Drop TIFF, PNG or JPEG files or folders here. Blue exports are used as the nuclear stain and "
+        hint = QLabel("Drop TIFF, PNG or JPEG files or folders here (a folder brings the images of all its "
+                      "subfolders). Blue exports are used as the nuclear stain and "
                       "green/red as the target; matching files are paired by name or, failing that, by image content. "
                       "Conditions and repetitions are read from the names and can be edited in the table. "
                       "Right-click a row to change a pairing.")

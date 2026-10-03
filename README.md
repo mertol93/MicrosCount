@@ -45,7 +45,7 @@ Python users can instead run `pip install git+https://github.com/mertol93/micros
 
 ### Quick start
 
-1. **Add images.** Use *Add files…* or *Add folder…*, or drag files or folders onto the table. MicrosCount pairs each nuclear-stain image with its target image:
+1. **Add images.** Use *Add files…* or *Add folder…*, paste a path into the box below them, or drag files or folders onto the table. A folder brings every image in it and in all its subfolders, at any depth. MicrosCount pairs each nuclear-stain image with its target image:
    - blue single-colour exports are the nuclear stain, green or red ones the target;
    - files are paired by name (`img_ch00`/`img_ch01`, `C1-x`/`C2-x`, `…DAPI`/`…AF488`); if names don't match, by image content (the same nuclei appear in both channels);
    - multi-channel TIFFs and merged RGB images are used as they are;
@@ -63,7 +63,7 @@ Repetitions analysed at different times can be put together afterwards with **Co
 
 ### Conditions and repetitions
 
-- **Automatic (default).** If the file names in a folder name several conditions, as in a microscope export (`Experiment_vehicle-1_ch00.tif`, `Experiment_stimulus 30 min-2_ch00.tif` …), the condition is the file name without the shared experiment name before the first `_` and without the trailing field number, and **each folder is one repetition**. Otherwise **each folder is a condition** and its parent folder the repetition.
+- **Automatic (default).** If the file names in a folder name several conditions, as in a microscope export (`Experiment_vehicle-1_ch00.tif`, `Experiment_stimulus 30 min-2_ch00.tif` …), the condition is the file name without the shared experiment name before the first `_` and without the trailing field number, and **each folder is one repetition**. Otherwise **each folder is a condition** and its parent folder the repetition, unless the folders are named like repetitions (`rep1`, `batch 2`, `day-3`, `R4` or a date): then the folder above them is the condition (`vehicle/rep1` → condition `vehicle`, repetition `1`).
 - **File names** or **Folder names** force one of the two.
 - A field number is a number at the end of the name after `-`, `_` or `#`, in brackets, or after *field*/*pos*; a number after a plain space (`dose 10`) stays part of the condition.
 - Spellings that differ only in case, spaces or separators (`stimulus 30 min`, `Stimulus-30min`) are treated as one condition, so repetitions line up; signs count (`drug +` and `drug -` are two conditions).
@@ -108,7 +108,7 @@ Every field is checked as it is measured, and warnings appear in the preview, th
 
 ### Quick start
 
-1. **Add SEM images.** Use *Add files…* or *Add folder…*, or drag files or folders onto the table. Pores should be the darkest regions; tick *Pores are bright* otherwise.
+1. **Add SEM images.** Use *Add files…* or *Add folder…*, paste a path into the box below them, or drag files or folders onto the table. A folder brings every image in it and in all its subfolders, at any depth. Pores should be the darkest regions; tick *Pores are bright* otherwise.
 2. **Check the samples and repetitions.** They are read from the names (see [Samples and repetitions](#samples-and-repetitions)) and can be edited in the table or with *Set sample…* / *Set repetition…*.
 3. **Check the pixel size of every image.** FEI / Thermo Fisher and Zeiss SEM TIFFs record it, as do calibrated TIFFs (ImageJ, OME); the table shows where each value comes from. For other images, set a *Default pixel size* (the MATLAB script's *Resolution*), type it into the table, or measure the scale bar with *From scale bar…*. A bare TIFF resolution tag, which many programs write, counts only when there is no default, and print resolutions (72–2400 dpi) are ignored. Without a pixel size, sizes are given in pixels.
 4. **Data bar.** The information bar at the bottom of an SEM image is left out automatically: its height is read from the file (FEI / Thermo Fisher) or found as a block of flat graphic rows. Choose *None* or a number of rows to override this.
@@ -122,7 +122,7 @@ Repetitions analysed at different times can be put together afterwards with **Co
 
 ### Samples and repetitions
 
-- **Automatic (default).** If the file names in a folder name several samples (`Membrane_neat_01.tif`, `Membrane_filled_01.tif` …), the sample is the file name without the parts all names share and without the trailing image number, and **each folder is one repetition** (an independently made membrane or batch). Otherwise **each folder is a sample** and its parent folder the repetition.
+- **Automatic (default).** If the file names in a folder name several samples (`Membrane_neat_01.tif`, `Membrane_filled_01.tif` …), the sample is the file name without the parts all names share and without the trailing image number, and **each folder is one repetition** (an independently made membrane or batch). Otherwise **each folder is a sample** and its parent folder the repetition, unless the folders are named like repetitions (`rep1`, `batch 2`, `day-3`, `R4` or a date): then the folder above them is the sample (`CA/batch-1` → sample `CA`, repetition `1`). A sample name found in several places for one repetition takes as much of its path as tells them apart (`PES/neat/batch-1`, `PSf/neat/batch-1` → `PES/neat`, `PSf/neat`).
 - **File names** or **Folder names** force one of the two. The naming rules are those of Bio & Cells (see [Conditions and repetitions](#conditions-and-repetitions)).
 
 ### How an experiment is summarised
@@ -261,6 +261,8 @@ microscount materials combine results_batch1/ results_batch2/ --reference "neat"
 microscount modules      # list the modules and analyses
 microscount selftest
 ```
+
+A folder given on the command line is searched with all its subfolders, at any depth; `--no-subfolders` limits it to the folder itself.
 
 Bio & Cells options: `--conditions-from auto|name|folder`, `--repetition`, `--control`, `--compare A B` (repeatable), `--reference CONDITION REFERENCE` (repeatable), `--order`, `--responder-percentile`, `--keep-failed-paper-fields`, `--no-subfolders`.
 

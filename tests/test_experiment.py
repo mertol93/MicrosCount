@@ -94,6 +94,25 @@ def test_conditions_from_folders(tmp_path):
     assert {p.condition for p in pairs} == {"img"}
 
 
+def test_folders_at_any_depth(tmp_path):
+    from microscount.core.imageio import list_images
+
+    # condition folders holding their repetitions, several levels below the folder given
+    for cond, r in (("control", 1.0), ("treated", 2.0)):
+        for rep in ("rep1", "rep2"):
+            d = tmp_path / "2026" / "project" / "plate A" / cond / rep
+            d.mkdir(parents=True)
+            n, t, _ = translocation_field(shape=(96, 96), ratio=r, seed=3)
+            Image.fromarray(n).save(d / "field-1_dapi.png")
+            Image.fromarray(t).save(d / "field-1_gfp.png")
+    (tmp_path / "2026" / "microscount_results_1").mkdir()
+    Image.fromarray(n).save(tmp_path / "2026" / "microscount_results_1" / "overlay.png")  # results are not inputs
+    files = list_images(tmp_path)
+    assert len(files) == 8
+    pairs, _ = pair_files(scan_files(files))
+    assert {(p.condition, p.repetition) for p in pairs} == {(c, r) for c in ("control", "treated") for r in "12"}
+
+
 # ---------------------------------------------------------------------- the summary
 
 

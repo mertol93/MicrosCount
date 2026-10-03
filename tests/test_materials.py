@@ -406,6 +406,28 @@ def test_run_combine_and_command_line(tmp_path):
     assert {r["repetition"] for r in _csv(tmp_path / "r7" / "per_image.csv")} == {"7"}
 
 
+def test_folders_at_any_depth(tmp_path):
+    seed = 0
+    for polymer in ("PES", "PSf"):
+        for sample, por in (("neat", 0.10), ("filled", 0.18)):
+            for rep in (1, 2):
+                d = tmp_path / "SEM" / "2026" / polymer / sample / f"batch {rep}"
+                d.mkdir(parents=True)
+                for k in (1, 2):
+                    seed += 1
+                    Image.fromarray(sem_image(shape=(120, 160), porosity=por, seed=seed)[0]).save(d / f"img_{k}.png")
+    out = tmp_path / "out"
+    assert main(["materials", "porosity", str(tmp_path / "SEM"), "--pixel-size", "0.05", "--n-thresholds", "2",
+                 "--out", str(out)]) == 0
+    rows = _csv(out / "per_image.csv")
+    assert len(rows) == 16
+    assert {(r["sample"], r["repetition"]) for r in rows} == {
+        (f"{p}/{s}", b) for p in ("PES", "PSf") for s in ("neat", "filled") for b in "12"}
+    assert {r["n_repetitions"] for r in _csv(out / "summary.csv")} == {"2"}
+    # only the folder itself
+    assert main(["materials", "porosity", str(tmp_path / "SEM"), "--no-subfolders", "--out", str(tmp_path / "o2")]) == 2
+
+
 def test_combining_result_folders_keeps_repetitions_apart():
     def rows(reps, samples, n=2):
         return [{"repetition": rep, "sample": g, "image_id": (f"{rep} · " if len(reps) > 1 else "") + f"{g} #{k}"}

@@ -21,8 +21,8 @@ from ..core.render import EXCLUDED_TINT, _blend, jet_map, label_colours, porosit
 from ..materials.experiment import ImageSpec, assign_samples, design_from_settings, label_images, scan_sem_files
 from ..materials.porosity import PorositySettings, analyse_sem
 from .common import (
-    IMAGE_FILTER, DropTable, FitImageLabel, ImageViewer, LogView, MplCanvas, ScaleBarDialog, Task, expand_paths,
-    fill_table, message, open_folder, start_task,
+    IMAGE_FILTER, DropTable, FitImageLabel, ImageViewer, LogView, MplCanvas, PathBox, ScaleBarDialog, Task,
+    expand_paths, fill_table, message, open_folder, start_task,
 )
 
 VIEWS = [("Overlay", "overlay"), ("Original", "grey"), ("Depth map (MATLAB style)", "depth"),
@@ -114,8 +114,13 @@ class PorosityPage(QWidget):
                            ("Remove", self.remove_selected), ("Clear", self.clear_all)):
             b = QPushButton(text)
             b.clicked.connect(slot)
+            if text == "Add folder…":
+                b.setToolTip("Every image in the folder and in all its subfolders, at any depth")
             row.addWidget(b)
         v1.addLayout(row)
+        self.path_box = PathBox()
+        self.path_box.paths.connect(self.add_paths)
+        v1.addWidget(self.path_box)
         self.table = DropTable(0, 5)
         self.table.setHorizontalHeaderLabels(["Image", "Sample", "Repetition", "Pixel size (µm)", "from"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
@@ -153,9 +158,9 @@ class PorosityPage(QWidget):
         row.addWidget(self.samples_from)
         row.addStretch(1)
         v1.addLayout(row)
-        hint = QLabel("SEM images in which pores are the darkest regions (tick 'Pores are bright' otherwise). Samples "
-                      "and repetitions are read from the names; the pixel size from the SEM file when it records one. "
-                      "All can be edited in the table.")
+        hint = QLabel("SEM images in which pores are the darkest regions (tick 'Pores are bright' otherwise). A folder "
+                      "brings the images of all its subfolders. Samples and repetitions are read from the names; the "
+                      "pixel size from the SEM file when it records one. All can be edited in the table.")
         hint.setWordWrap(True)
         hint.setStyleSheet(GREY)
         v1.addWidget(hint)

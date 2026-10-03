@@ -189,15 +189,60 @@ def assign_groups(items: list, path_of: Callable, name_of: Callable | None = Non
                 it.field_no = n
                 it.repetition = reps.get(f, "1")
     else:
-        parent = {f: str(Path(f).parent) for f in folders}
-        reps = path_labels(list(parent.values())) if len(set(parent.values())) > 1 else {}
+        group, rep = _folder_groups(list(folders))
         for f, its in folders.items():
             for it, n in zip(its, parsed[f][1]):
-                setattr(it, attr, Path(f).name)
+                setattr(it, attr, group[f])
                 it.field_no = n
-                it.repetition = reps.get(parent[f], "1")
+                it.repetition = rep[f]
     unify_groups(items, attr)
     return used
+
+
+_REPETITION_NAME = re.compile(
+    r"^(?:(?:rep|repeat|repetition|replicate|batch|run|day|exp|experiment|series|trial|set|r)[\s_\-#.]*\d+"
+    r"|\d{1,4}[.\-_]\d{1,2}[.\-_]\d{1,4})$", re.I)
+
+
+def looks_like_repetition(name: str) -> bool:
+    """``rep1``, ``Batch 2``, ``day-3``, ``R4``, a date: a folder named after a repetition, not a group."""
+    return bool(_REPETITION_NAME.match(name.strip()))
+
+
+def _folder_groups(folders: list[str]) -> tuple[dict[str, str], dict[str, str]]:
+    """Group and repetition of each image folder when folders name the groups.
+
+    Usually a folder is a group and its parent folder the repetition (``rep1/vehicle``). When
+    every image folder is named like a repetition and the parents are not (``CA/batch-1``,
+    ``CA/batch-2``), the parent is the group and the folder the repetition. A group name found
+    in more than one place for the same repetition (``PES/neat/batch-1``, ``PSf/neat/batch-1``)
+    takes as much of its path as tells the places apart (``PES/neat``, ``PSf/neat``).
+    """
+    names = {f: Path(f).name for f in folders}
+    parent = {f: str(Path(f).parent) for f in folders}
+    swap = all(looks_like_repetition(n) for n in names.values()) and not all(
+        looks_like_repetition(Path(p).name) for p in parent.values())
+    if not swap:
+        reps = path_labels(list(parent.values())) if len(set(parent.values())) > 1 else {}
+        return dict(names), {f: reps.get(parent[f], "1") for f in folders}
+    short = short_labels(list(names.values())) if len(set(names.values())) > 1 else {}
+    rep = {f: short.get(names[f], names[f]) if short else "1" for f in folders}
+    group = {f: Path(parent[f]).name for f in folders}
+    places: dict[str, dict[str, set[str]]] = {}  # group -> repetition -> the folders it is in
+    for f in folders:
+        places.setdefault(group_key(group[f]), {}).setdefault(rep[f], set()).add(parent[f])
+    for by_rep in places.values():
+        if all(len(dirs) < 2 for dirs in by_rep.values()):
+            continue  # one place per repetition: one group, even if its batches sit in different folders
+        dirs = set().union(*by_rep.values())
+        parts = {d: Path(d).parts for d in dirs}
+        k = 2
+        while len({"/".join(p[-k:]) for p in parts.values()}) < len(dirs) and any(len(p) > k for p in parts.values()):
+            k += 1
+        for f in folders:
+            if parent[f] in dirs:
+                group[f] = "/".join(parts[parent[f]][-k:])
+    return group, rep
 
 
 def unify_groups(items: list, attr: str = "condition") -> None:

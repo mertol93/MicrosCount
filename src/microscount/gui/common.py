@@ -237,6 +237,52 @@ class DropTable(QTableWidget):
             super().dropEvent(e)
 
 
+def split_paths(text: str) -> list[str]:
+    """Paths typed or pasted into a box: one per line or separated by ``;``, quotes and ``~`` handled."""
+    out = []
+    for part in text.replace(";", "\n").splitlines():
+        p = part.strip().strip('"').strip("'").strip()
+        if p.lower().startswith("file://"):
+            p = QUrl(p).toLocalFile() or p
+        if p:
+            out.append(os.path.expanduser(p))
+    return out
+
+
+class PathBox(QWidget):
+    """A box for a typed or pasted folder or file path: a folder brings every image in it and in all
+    its subfolders, at any depth."""
+
+    paths = Signal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QLineEdit
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.edit = QLineEdit()
+        self.edit.setPlaceholderText("or paste a folder or file path (subfolders are included)")
+        self.edit.setToolTip("A folder brings every TIFF, PNG and JPEG image in it and in all its subfolders. Several "
+                             "paths can be given on separate lines or separated by ';'.")
+        self.edit.returnPressed.connect(self.submit)
+        row.addWidget(self.edit, 1)
+        b = QPushButton("Add")
+        b.clicked.connect(self.submit)
+        row.addWidget(b)
+
+    def submit(self):
+        got = split_paths(self.edit.text())
+        if not got:
+            return
+        missing = [p for p in got if not Path(p).exists()]
+        if missing:
+            message(self, "Path not found", "Not found:\n" + "\n".join(missing))
+            return
+        self.edit.clear()
+        self.paths.emit(got)
+
+
 class ScaleBarDialog(QDialog):
     """Pixel size from a burned-in scale bar of known length."""
 
