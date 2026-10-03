@@ -49,7 +49,9 @@ IMAGE_FIRST = [
     "area_weighted_mean_pore_diameter_um", "largest_pore_diameter_um", "pore_density_per_um2", "mean_circularity",
     "mean_pore_radius_um", "sd_pore_radius_um", "median_pore_radius_um", "pixel_size_um", "pixel_size_source",
     "data_bar_px", "data_bar_source", "analysed_area_um2", "n_pores_edge", "pore_threshold", "threshold_source",
-    "thresholds", "warnings",
+    "thresholds", "porosity_N2_percent", "porosity_N3_percent", "porosity_N4_percent", "porosity_N5_percent",
+    "porosity_N6_percent",
+    "porosity_evened_percent", "evened_overlap", "warnings",
 ]
 PORE_FIRST = ["image_id", "image", "sample", "repetition", "pore", "equivalent_diameter_um", "equivalent_radius_um",
               "area_um2", "area_px", "equivalent_diameter_px", "perimeter_px", "circularity", "touches_edge", "included",
@@ -217,6 +219,10 @@ def readme_text(ms: MaterialsSummary, design: GroupDesign, n_images: int, n_warn
         "Pore density = number of pores / analysed area (pores cut by the image edge included).",
         "Circularity = 4π × area / perimeter² (ImageJ's traced perimeter); 1 for a circle.",
         "Analysed area = the image without the SEM data bar and burned-in annotations.",
+        "Checks (Images sheet): porosity_N2..N6_percent = the porosity with 2 to 6 thresholds; porosity_evened_percent "
+        "and evened_overlap = the porosity, and the overlap (Jaccard index) of the pores, after the large-scale "
+        "brightness is evened out (rolling ball, radius 15% of the image). A low overlap means the pores follow uneven "
+        "brightness or an unstable threshold.",
         "Sample value in a repetition = mean ± SD of its images (images of one sample are technical replicates).",
         "Across repetitions = mean ± SD of the repetition values (repetitions are the independent replicates).",
         f"Reference sample: {design.reference or '(none set)'}. Change = 100 × (value / reference value − 1) in the "

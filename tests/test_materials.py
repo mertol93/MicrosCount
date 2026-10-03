@@ -589,3 +589,48 @@ def test_bright_pores_unknown_pixel_size_and_twelve_bit(tmp_path):
     r = analyse_sem(load_image(tmp_path / "t12.tif"), PorositySettings(n_thresholds=2))
     assert r.summary["saturated_fraction"] == pytest.approx((t >= 4095).mean())
     assert not any("low contrast" in w for w in r.warnings)
+
+
+def test_checks_uneven_brightness_and_number_of_thresholds(tmp_path):
+    from microscount.synthetic import sem_surface
+
+    g, truth = sem_surface(seed=3, porosity=0.05, style="flat")
+    assert abs(truth.mean() - 0.05) < 0.005
+    even = analyse_sem(load_image(_png(tmp_path / "even.png", g)), PorositySettings())
+    S = even.summary
+    assert S["porosity_N4_percent"] == pytest.approx(S["porosity_percent"])
+    assert S["porosity_N2_percent"] >= S["porosity_N4_percent"] >= S["porosity_N6_percent"]
+    assert S["evened_overlap"] > 0.6 and not any("evened out" in w for w in even.warnings)
+    # a darker half: the darkest class follows it rather than the pores
+    dark = g.astype(float)
+    dark[:, : g.shape[1] // 2] *= 0.55
+    shaded = analyse_sem(load_image(_png(tmp_path / "shaded.png", np.round(dark).astype(np.uint8))), PorositySettings())
+    assert shaded.summary["evened_overlap"] < 0.4 and any("evened out" in w for w in shaded.warnings)
+    fixed = analyse_sem(load_image(tmp_path / "even.png"), PorositySettings(pore_threshold_value=100))
+    assert "porosity_N4_percent" not in fixed.summary and math.isfinite(fixed.summary["evened_overlap"])
+
+
+def test_check_against_traced_masks(tmp_path):
+    from microscount.core.imageio import list_images
+    from microscount.materials.check import check_image, mask_for, read_mask
+    from microscount.synthetic import sem_surface
+
+    g, truth = sem_surface(seed=5, porosity=0.05, style="flat")
+    Image.fromarray(g).save(tmp_path / "flat.png")
+    mask = truth.astype(np.uint8) * 255
+    mask[:, :50] = 128  # a strip that was not traced
+    Image.fromarray(mask).save(tmp_path / "flat_pores.png")
+    assert [p.name for p in list_images(tmp_path)] == ["flat.png"]  # the mask is never analysed
+    assert mask_for(tmp_path / "flat.png") == tmp_path / "flat_pores.png"
+    pore, traced = read_mask(tmp_path / "flat_pores.png")
+    assert not traced[:, :50].any() and traced[:, 50:].all() and (pore == (truth & traced)).all()
+    row = check_image(tmp_path / "flat.png", PorositySettings(n_thresholds=2))  # flat pores: two thresholds find them
+    assert row["overlap"] > 0.9 and row["pores_found"] > 0.95 and abs(row["size_ratio"] - 1) < 0.05
+    assert row["porosity_traced_percent"] == pytest.approx(100 * truth[:, 50:].mean(), abs=1e-9)
+    default = check_image(tmp_path / "flat.png")
+    assert default["overlap"] < row["overlap"] and default["difference_pp"] < 0
+    out = tmp_path / "scores.csv"
+    assert main(["materials", "check", str(tmp_path), "--n-thresholds", "2", "--out", str(out)]) == 0
+    assert out.read_text(encoding="utf-8-sig").splitlines()[0].startswith("image,mask,porosity_found_percent")
+    Image.fromarray(mask[:-10]).save(tmp_path / "flat_pores.png")  # not the size of the image
+    assert main(["materials", "check", str(tmp_path)]) == 2

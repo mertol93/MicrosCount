@@ -135,13 +135,15 @@ def is_supported(path: str | Path) -> bool:
 
 
 _LUT_LEGEND = re.compile(r"(?i)ch\d+lut$")  # Leica LAS X colour-table legends, e.g. "field-1ch0LUT.png"
+MASK_SUFFIX = "_pores"  # a hand-traced pore mask: "<image name>_pores.png"
 
 
 def list_images(folder: str | Path, recursive: bool = True) -> list[Path]:
     """Supported image files under ``folder``.
 
-    Skips hidden folders, MicrosCount result folders, and what a Leica LAS X export
-    puts next to the images: the ``MetaData`` folder and its colour-table legends.
+    Skips hidden folders, MicrosCount result folders, hand-traced pore masks (``*_pores``,
+    see ``materials.check``), and what a Leica LAS X export puts next to the images: the
+    ``MetaData`` folder and its colour-table legends.
     """
     folder = Path(folder)
     pattern = "**/*" if recursive else "*"
@@ -155,7 +157,7 @@ def list_images(folder: str | Path, recursive: bool = True) -> list[Path]:
         if any(part.lower().startswith(("microscount_results", "microscount_combined")) or part.lower() == "metadata"
                for part in rel[:-1]):
             continue
-        if _LUT_LEGEND.search(p.stem):
+        if _LUT_LEGEND.search(p.stem) or p.stem.lower().endswith(MASK_SUFFIX):
             continue
         out.append(p)
     return out

@@ -160,6 +160,20 @@ Images of one membrane are technical replicates, so the within-repetition test i
 
 Every image is checked as it is measured, and warnings appear in the preview, the log and the *Images* sheet: a porosity above 60% or below 0.5% (are the pores the darkest class, and is the number of thresholds right?), fewer than 20 pores, more than a quarter of the pores cut by the image edge, one pore covering more than a tenth of the image, saturated pixels (charging), low contrast and JPEG input. The summary notes images without a pixel size and samples whose images were taken at different pixel sizes.
 
+Two checks show how far a result can be trusted:
+- **Uneven brightness.** The image is analysed again with its large-scale brightness evened out (ImageJ's rolling ball, radius 15% of the image). When the pores found then overlap less than 40% (Jaccard index) with the pores found before, the pores follow charging, shading or an unstable threshold rather than the surface, and the image is flagged. On 31 micrographs from published membrane figures it flagged 20: every one with visible shading or charging, and others whose threshold was unstable.
+- **Number of thresholds.** The porosity with N = 2 to 6 is listed for every image (preview and *Images* sheet), because the darkest of N + 1 classes shrinks as N grows: choose N for the kind of image, and check it against tracing (below).
+
+### Check against your own tracing
+
+The surest test of the settings is a few images whose pores an expert has traced. Save each mask next to its image with `_pores` added to the name (`membrane_01.tif` → `membrane_01_pores.png`, same size): white = pore, black = solid, mid-grey = not traced. In Fiji: outline the pores (*Wand* or *Freehand* tool, Shift to add), *Edit ▸ Selection ▸ Create Mask*, and save the mask as PNG. Then
+
+```bash
+microscount materials check path/to/traced --n-thresholds 4 --out scores.csv
+```
+
+analyses every image that has a mask with the given settings (or `--config settings.yaml`) and reports the porosity found and traced, the overlap of the pore pixels, the share of traced pores found, the share of found pores that are traced pores, the ratio of mean pore diameters, and how many pieces a pore is split into. In the window, *Check against traced pores…* does the same with the settings shown and saves the scores next to the images. Masks are never analysed as images.
+
 ---
 
 ## Methods
@@ -235,6 +249,8 @@ Options, all off by default so that results match the MATLAB script:
 | SEM porosity vs the original MATLAB outputs (Rabbani's sample images, *Resolution* 0.459 µm) | binary segmentation and pore segmentation after the watershed split **pixel-identical**; porosity (0.09945, 0.19567), pore count (330, 453) and mean pore radius identical |
 | SEM watershed vs Meyer's flooding written out pixel by pixel, on 120 random images | identical |
 | SEM data bars and scale bars on 37 micrographs from published membrane figures (resized and JPEG-compressed; graphic bars and bars written over the image) | bars found in 36 of 37; scale bars measured in 32, each within 1 px of the length read by eye, none wrong |
+| SEM porosity on synthetic membrane surfaces with known pores (`validation/sem_benchmark.py`, 6 images per case), default N = 4 | flat dark pores: porosity 3.2% found for 5.1% true, overlap 0.63, diameters 0.77 × true; pores with a dark core in grey walls (as in secondary-electron images): 1.3% for 5.1%, overlap 0.25, diameters 0.52 × true |
+| The same with N = 2 | flat pores: 5.1% for 5.1%, overlap 0.99; pores with grey walls: 3.6% for 5.1%, overlap 0.71; uneven brightness 0.68, charging patches 0.42. On textured real surfaces N = 2 can take much of the surface as pore, so N is a choice to check against traced images |
 | Per-cell protocol on synthetic cells with a known N/C of 0.6, 1.0 and 2.5 | per-cell median 0.63, 0.99 and 2.26; the paper method gives 0.71, 1.03 and 2.18 (pulled towards 1) |
 
 The ImageJ comparisons can be re-run with the Java programs in [`validation/`](validation). The unit tests (`pytest`) check stored ImageJ and MATLAB reference values, and `microscount selftest` runs a quick check of the main steps on any computer.
@@ -259,6 +275,7 @@ microscount materials porosity batch1/ batch2/ batch3/ --pixel-size 0.459 --refe
     --compare "neat" "filled" --out results
 microscount materials porosity path/to/sem --pixel-size 0.459 --n-thresholds 4 --data-bar 60
 microscount materials combine results_batch1/ results_batch2/ --reference "neat"
+microscount materials check path/to/traced --n-thresholds 2 --out scores.csv   # settings vs hand-traced pores
 
 microscount modules      # list the modules and analyses
 microscount selftest

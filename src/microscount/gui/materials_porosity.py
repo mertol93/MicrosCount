@@ -289,6 +289,12 @@ class PorosityPage(QWidget):
                                     "repetition): choose the folder that holds them.")
         self.btn_combine.clicked.connect(self.combine_saved)
         row.addWidget(self.btn_combine)
+        self.btn_check = QPushButton("Check against traced pores…")
+        self.btn_check.setToolTip("Score the current settings against pores traced by hand: choose a folder of images "
+                                  "with masks next to them (membrane_01.tif + membrane_01_pores.png; white = pore, "
+                                  "black = solid, mid-grey = not traced).")
+        self.btn_check.clicked.connect(self.check_traced)
+        row.addWidget(self.btn_check)
         row.addStretch(1)
         v4.addLayout(row)
         self.progress = QProgressBar()
@@ -888,6 +894,15 @@ class PorosityPage(QWidget):
                  f"threshold {S['pore_threshold']:g} ({html.escape(S['threshold_source'])}; levels {S['thresholds']})",
                  f"Pixel size {f(S['pixel_size_um'], 5)} µm ({html.escape(S['pixel_size_source'])}); data bar "
                  f"{S['data_bar_px']} px ({html.escape(S['data_bar_source'])})"]
+        by_n = [(k, S.get(f"porosity_N{k}_percent")) for k in range(2, 7) if f"porosity_N{k}_percent" in S]
+        checks = []
+        if by_n:
+            checks.append("porosity with N = " + ", ".join(f"{k}: {f(v)}%" for k, v in by_n))
+        if math.isfinite(S.get("evened_overlap", math.nan)):
+            checks.append(f"after evening out the brightness {f(S['porosity_evened_percent'])}% "
+                          f"(overlap {S['evened_overlap']:.2f})")
+        if checks:
+            parts.append("Checks: " + "; ".join(checks))
         if S.get("instrument"):
             extra = [f"{S['voltage_kv']:g} kV" if "voltage_kv" in S else "",
                      f"WD {S['working_distance_mm']:.3g} mm" if "working_distance_mm" in S else "",
@@ -991,6 +1006,66 @@ class PorosityPage(QWidget):
         notes = "".join(f"<br><span style='{GREY}'>{html.escape(n)}</span>" for n in ms.notes)
         self.res_label.setText(f"{head}.<br>Saved to {html.escape(str(out))}{notes}")
         self.tabs.setCurrentIndex(1)
+
+    def check_traced(self):
+        if self._busy():
+            return
+        d = QFileDialog.getExistingDirectory(self, "Folder of SEM images with traced pore masks (name_pores.png)")
+        if not d:
+            return
+        from ..core.imageio import list_images
+        from ..materials.check import check_images, mask_for
+
+        paths = [p for p in list_images(d) if mask_for(p)]
+        if not paths:
+            message(self, "Check against traced pores", "No image there has a traced mask next to it.\n\nSave each "
+                    "mask as the image name + '_pores.png' (membrane_01.tif → membrane_01_pores.png): white = pore, "
+                    "black = solid, mid-grey = not traced.")
+            return
+        s = self.get_settings()
+        self.log(f"Checking the settings against {len(paths)} traced image(s) in {d}")
+        self._start(Task(check_images, paths, s), lambda res: self._show_check(res, Path(d)), "Checking")
+
+    def _show_check(self, res, folder: Path):
+        import datetime as _dt
+
+        from ..core.report import write_csv
+        from ..materials.check import METRICS
+
+        rows, mean = res
+        out = folder / ("microscount_check_" + _dt.datetime.now().strftime("%Y%m%d_%H%M%S") + ".csv")
+        try:
+            write_csv(out, rows + [mean], ["image", "mask", *METRICS, "warnings"])
+        except OSError as exc:
+            out = None
+            self.log(f"Could not save the scores: {exc}")
+        cols = [("porosity_found_percent", "Porosity found (%)"), ("porosity_traced_percent", "traced (%)"),
+                ("overlap", "Overlap"), ("pores_found", "Pores found"), ("found_in_traced", "Found in traced"),
+                ("size_ratio", "Size ratio"), ("pieces", "Pieces")]
+
+        def f(v):
+            return "–" if not isinstance(v, (int, float)) or not math.isfinite(v) else f"{v:.3g}"
+
+        head = "".join(f"<th>{html.escape(c[1])}</th>" for c in cols)
+        body = "".join("<tr><td>" + html.escape(str(r["image"])) + "</td>" + "".join(f"<td>{f(r[k])}</td>" for k, _ in cols)
+                       + "</tr>" for r in rows + [mean])
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Check against traced pores")
+        lay = QVBoxLayout(dlg)
+        txt = QLabel(f"<table cellpadding='4'><tr><th>Image</th>{head}</tr>{body}</table><br>"
+                     "Overlap: Jaccard index of the pore pixels (1 = identical). Pores found: share of traced pores "
+                     "at least 30% found. Found in traced: share of found pores lying at least half in traced pores. "
+                     "Size ratio: mean diameter found ÷ traced. Pieces: found pores per traced pore."
+                     + (f"<br><br>Scores saved to {html.escape(str(out))}" if out else ""))
+        txt.setWordWrap(True)
+        txt.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(txt)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok)
+        bb.accepted.connect(dlg.accept)
+        lay.addWidget(bb)
+        self.log(f"Check: overlap {f(mean['overlap'])}, porosity found {f(mean['porosity_found_percent'])}% vs traced "
+                 f"{f(mean['porosity_traced_percent'])}% ({len(rows)} image(s))")
+        dlg.exec()
 
     def combine_saved(self):
         if self._busy():

@@ -271,3 +271,35 @@ def test_gui_materials_experiment(tmp_path, monkeypatch):
     assert list((tmp_path / "outs").glob("microscount_combined_*/summary.csv"))
     assert not dialogs
     w.close()
+
+
+def test_gui_check_against_traced_pores(tmp_path, monkeypatch):
+    pytest.importorskip("PySide6")
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    import microscount.gui.materials_porosity as mp
+    from microscount.gui.app import MainWindow
+    from microscount.synthetic import sem_surface
+
+    g, truth = sem_surface(seed=2, porosity=0.05, style="flat")
+    Image.fromarray(g).save(tmp_path / "flat.png")
+    Image.fromarray(truth.astype(np.uint8) * 255).save(tmp_path / "flat_pores.png")
+    shown = []
+    monkeypatch.setattr(mp.QFileDialog, "getExistingDirectory", lambda *a, **k: str(tmp_path))
+    monkeypatch.setattr(mp.QDialog, "exec", lambda self: shown.append(self) or 0)
+    app = QApplication.instance() or QApplication([])
+    p = MainWindow().poro
+    p.nthr.setValue(2)  # the check uses the settings in the window
+    p.check_traced()
+    t0 = time.time()
+    while p.task is not None and time.time() - t0 < 120:
+        app.processEvents()
+        time.sleep(0.01)
+    for _ in range(10):
+        app.processEvents()
+    saved = list(tmp_path.glob("microscount_check_*.csv"))
+    assert shown and saved
+    mean = saved[0].read_text(encoding="utf-8-sig").splitlines()[-1].split(",")
+    assert mean[0] == "mean" and float(mean[5]) > 0.9  # overlap with two thresholds on flat pores

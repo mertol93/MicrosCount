@@ -24,7 +24,8 @@ Around the MATLAB core, for images straight from the microscope:
   micrograph), is left out;
 * per pore: equivalent diameter, perimeter and circularity (ImageJ's traced perimeter);
   per image: diameter statistics (mean, median, d10, d90, area-weighted mean, largest),
-  pore density and quality checks.
+  pore density and quality checks, among them the porosity with 2 to 6 thresholds and
+  whether the pores survive evening out the large-scale brightness.
 
 Options (all off by default so results match the MATLAB script): a fixed pore
 threshold, counting more than one dark class as pore, excluding pores cut by the
@@ -685,6 +686,33 @@ def _full_scale(grey: np.ndarray, img: LoadedImage) -> float:
     return top
 
 
+def _pore_fraction(work: np.ndarray, valid: np.ndarray, level: float, passes: int) -> tuple[np.ndarray, float]:
+    """Pores at a threshold, as for the porosity: the darkest class, then ``bwmorph(..., 'majority')``."""
+    pore = ~bwmorph_majority(~(work <= level) | ~valid, passes) & valid
+    n = int(valid.sum())
+    return pore, float(pore.sum() / n) if n else math.nan
+
+
+def evened_brightness(work: np.ndarray, valid: np.ndarray, fraction: float = 0.15) -> np.ndarray:
+    """The image with its large-scale brightness evened out, for the uneven-brightness check.
+
+    ImageJ's rolling ball for a light background with a radius of ``fraction`` of the smaller image
+    side, much larger than pores; left-out pixels are first filled from the nearest analysed pixel.
+    """
+    from ..core.imagej import rolling_ball_background
+
+    g = work.astype(np.float32)
+    if not valid.all():
+        idx = ndi.distance_transform_edt(~valid, return_distances=False, return_indices=True)
+        g = g[tuple(idx)]
+    bg = rolling_ball_background(g, max(10.0, fraction * min(g.shape)), light_background=True)
+    f = g - bg + np.float32(np.median(bg[valid]))
+    if np.issubdtype(work.dtype, np.integer):
+        info = np.iinfo(work.dtype)
+        return np.clip(np.round(f), info.min, info.max).astype(work.dtype)
+    return f
+
+
 def analyse_sem(
     img: LoadedImage,
     settings: PorositySettings | None = None,
@@ -770,6 +798,26 @@ def analyse_sem(
     solid = bwmorph_majority(solid, s.majority_passes)
     n_valid = int(valid.sum())
     porosity = float(((~solid) & valid).sum() / n_valid) if n_valid else math.nan
+
+    # how much the result depends on the number of thresholds, and on the large-scale brightness
+    by_n = {}
+    if s.pore_threshold_value is None and n_valid:
+        for n_thr in (2, 3, 4, 5, 6):
+            lv = levels if n_thr == int(s.n_thresholds) else matlab_multithresh(vals, n_thr, s.threshold_search)
+            by_n[n_thr] = _pore_fraction(work, valid, float(lv[int(np.clip(s.pore_classes, 1, n_thr)) - 1]),
+                                         s.majority_passes)[1]
+    evened_overlap = evened_porosity = math.nan
+    if n_valid:
+        ev = evened_brightness(work, valid)
+        if s.pore_threshold_value is not None:
+            ev_level = pore_level
+        else:
+            ev_lv = matlab_multithresh(ev[valid], int(s.n_thresholds), s.threshold_search)
+            ev_level = float(ev_lv[int(np.clip(s.pore_classes, 1, len(ev_lv))) - 1])
+        ev_pore, evened_porosity = _pore_fraction(ev, valid, ev_level, s.majority_passes)
+        here = ~solid & valid
+        union = int((here | ev_pore).sum())
+        evened_overlap = float((here & ev_pore).sum() / union) if union else 1.0
     pores = split_pores_watershed(solid) if s.split_pores else ~solid
     pores &= valid
     pores, labels, n = bwareaopen(pores, s.min_pore_area_px, 8)
@@ -851,6 +899,9 @@ def analyse_sem(
         "pore_threshold": grey_level(pore_level),
         "threshold_source": thr_source,
         "thresholds": ", ".join(f"{v:g}" for v in sorted(grey_level(float(v)) for v in levels)),
+        **{f"porosity_N{k}_percent": 100 * v for k, v in by_n.items()},
+        "porosity_evened_percent": 100 * evened_porosity if math.isfinite(evened_porosity) else math.nan,
+        "evened_overlap": evened_overlap,
         "image_height_px": int(grey.shape[0]),
         "image_width_px": int(grey.shape[1]),
         "cropped_bottom_px": crop,
@@ -865,6 +916,10 @@ def analyse_sem(
                      "(otherwise tick 'Pores are bright') and is the number of thresholds right?")
     if 0 < len(inc) < 20:
         warns.append(f"only {len(inc)} pores: pore-size statistics are uncertain")
+    if math.isfinite(evened_overlap) and evened_overlap < 0.4 and max(porosity, evened_porosity) >= 0.01:
+        warns.append(f"the pores change when the large-scale brightness is evened out (overlap {evened_overlap:.2f}; "
+                     f"porosity {100 * porosity:.2f}% -> {100 * evened_porosity:.2f}%): uneven brightness (charging, "
+                     "shading) or an unstable threshold - check the overlay, and analyse evenly lit images or areas")
     if len(rows) >= 10 and summary["n_pores_edge"] / len(rows) > 0.25:
         warns.append(f"{100 * summary['n_pores_edge'] / len(rows):.0f}% of the pores are cut by the image edge: "
                      "their sizes are underestimated (consider a lower magnification or leaving them out of the "

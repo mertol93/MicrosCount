@@ -321,6 +321,28 @@ def _apply_sample_design(s, a) -> None:
         setattr(s, "sample_order" if hasattr(s, "sample_order") else "order", list(a.order))
 
 
+def _segmentation_options(s, a) -> bool:
+    """Threshold, data bar and pore-brightness options of the command line into PorositySettings."""
+    if a.n_thresholds:
+        s.n_thresholds = a.n_thresholds
+    if a.threshold is not None:
+        s.pore_threshold_value = a.threshold
+    if a.crop_bottom is not None:
+        s.data_bar, s.crop_bottom_px = ("manual", a.crop_bottom) if a.crop_bottom > 0 else ("none", 0)
+    if a.data_bar:
+        v = a.data_bar.strip().lower()
+        if v in ("auto", "none"):
+            s.data_bar = v
+        elif v.isdigit():
+            s.data_bar, s.crop_bottom_px = "manual", int(v)
+        else:
+            print("--data-bar: auto, none or a number of rows", file=sys.stderr)
+            return False
+    if a.bright_pores:
+        s.pores_are_bright = True
+    return True
+
+
 def cmd_porosity(a) -> int:
     from .materials.experiment import ImageSpec, label_images, scan_sem_files
     from .materials.porosity import PorositySettings
@@ -343,25 +365,10 @@ def cmd_porosity(a) -> int:
         s.pixel_size_um = a.pixel_size
     if a.ignore_file_pixel_size:
         s.use_metadata_pixel_size = False
-    if a.n_thresholds:
-        s.n_thresholds = a.n_thresholds
-    if a.threshold is not None:
-        s.pore_threshold_value = a.threshold
-    if a.crop_bottom is not None:
-        s.data_bar, s.crop_bottom_px = ("manual", a.crop_bottom) if a.crop_bottom > 0 else ("none", 0)
-    if a.data_bar:
-        v = a.data_bar.strip().lower()
-        if v in ("auto", "none"):
-            s.data_bar = v
-        elif v.isdigit():
-            s.data_bar, s.crop_bottom_px = "manual", int(v)
-        else:
-            print("--data-bar: auto, none or a number of rows", file=sys.stderr)
-            return 2
+    if not _segmentation_options(s, a):
+        return 2
     if a.edge_pores_out:
         s.exclude_edge_pores = True
-    if a.bright_pores:
-        s.pores_are_bright = True
     _apply_sample_design(s, a)
     if a.inputs:
         specs = scan_sem_files(_expand(a.inputs, recursive=not a.no_subfolders), samples_from=s.samples_from)
@@ -467,13 +474,64 @@ def cmd_materials_combine(a) -> int:
     return 0
 
 
+def _materials_check_args(c: argparse.ArgumentParser) -> None:
+    c.add_argument("inputs", nargs="+", help="SEM images, or folders of them, each with a traced mask next to it "
+                   "(membrane_01.tif + membrane_01_pores.png: white = pore, black = solid, mid-grey = not traced)")
+    c.add_argument("--config", help="settings.yaml whose analysis settings to check")
+    c.add_argument("--n-thresholds", type=int, help="MATLAB 'N' (default 4)")
+    c.add_argument("--threshold", type=float, metavar="GREY", help="fixed pore threshold instead of multithresh")
+    c.add_argument("--data-bar", metavar="auto|none|ROWS", help="SEM data bar at the bottom (default auto)")
+    c.add_argument("--crop-bottom", type=int, help="rows to remove at the bottom (same as --data-bar ROWS)")
+    c.add_argument("--bright-pores", action="store_true", help="pores are brighter than the solid")
+    c.add_argument("--no-subfolders", action="store_true", help="only the images directly inside the given folders")
+    c.add_argument("--out", metavar="FILE.csv", help="also write the scores to this CSV file")
+
+
+def cmd_materials_check(a) -> int:
+    from .core.report import write_csv
+    from .materials.check import METRICS, check_images
+    from .materials.porosity import PorositySettings
+    from .modules import load_settings
+
+    s = PorositySettings()
+    if a.config:
+        an, s, _inputs = load_settings(a.config)
+        if an.key != "porosity":
+            print(f"{a.config} holds settings for {an.title}, not SEM porosity", file=sys.stderr)
+            return 2
+    if not _segmentation_options(s, a):
+        return 2
+    paths = _expand(a.inputs, recursive=not a.no_subfolders)
+    try:
+        rows, mean = check_images(paths, s)
+    except (FileNotFoundError, ValueError) as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    if not rows:
+        print("no image has a traced mask next to it (membrane_01.tif + membrane_01_pores.png)", file=sys.stderr)
+        return 2
+    heads = ["porosity found %", "traced %", "diff pp", "overlap", "pores found", "found in traced", "size ratio",
+             "pieces"]
+    keys = METRICS[:8]
+    width = max(len(r["image"]) for r in rows + [mean])
+    print(f"{'image':{width}s}  " + "  ".join(f"{h:>{max(7, len(h))}s}" for h in heads))
+    for r in rows + [mean]:
+        print(f"{r['image']:{width}s}  " + "  ".join(f"{_fmt(r[k]):>{max(7, len(h))}s}" for k, h in zip(keys, heads)))
+    if a.out:
+        write_csv(Path(a.out), rows + [mean], ["image", "mask", *METRICS, "warnings"])
+        print(f"scores written to {a.out}")
+    return 0
+
+
 COMMANDS = {"translocation": (_translocation_args, cmd_translocation),
             "porosity": (_porosity_args, cmd_porosity)}
 # module commands that are not analyses of images
 EXTRA = {"bio": {"combine": ("one experiment from result folders analysed separately (e.g. one per repetition)",
                              _combine_args, cmd_combine)},
          "materials": {"combine": ("one SEM experiment from result folders analysed separately (e.g. one per repetition)",
-                                   _materials_combine_args, cmd_materials_combine)}}
+                                   _materials_combine_args, cmd_materials_combine),
+                       "check": ("score the analysis against pores traced by hand (image + image_pores.png)",
+                                 _materials_check_args, cmd_materials_check)}}
 
 
 def cmd_run(a) -> int:
