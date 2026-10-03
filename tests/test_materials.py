@@ -25,8 +25,8 @@ from microscount.materials.experiment import (
     summarise_samples,
 )
 from microscount.materials.porosity import (
-    PorositySettings, analyse_sem, bwmorph_majority, detect_data_bar, grey_from_image, matlab_multithresh,
-    measure_data_bar_scale, meyer_watershed, split_pores_watershed,
+    PorositySettings, analyse_sem, bwmorph_majority, detect_data_bar, detect_overlay_bar, grey_from_image,
+    matlab_multithresh, measure_data_bar_scale, meyer_watershed, split_pores_watershed,
 )
 from microscount.synthetic import sem_image
 
@@ -104,6 +104,63 @@ def test_data_bar_detection_and_scale_bar():
     assert detect_data_bar(sat) == 0
     flat = np.vstack([g, np.zeros((40, g.shape[1]), np.uint8)])  # an empty strip below the sample: no text, no bar
     assert detect_data_bar(flat) == 0
+    for img in [g, sat, flat] + [grey_from_image(load_image(DATA / f"{n}.jpg"))[0] for n in ("SEM1", "SEM2")]:
+        assert detect_overlay_bar(img) == 0
+
+
+def _jpeg(a, quality=75):
+    buf = io.BytesIO()
+    Image.fromarray(a).save(buf, "JPEG", quality=quality)
+    return np.asarray(Image.open(io.BytesIO(buf.getvalue())))
+
+
+def _xl30(img, bar=(360, 559)):
+    """Philips XL30 style: two lines of white text written over the bottom of the micrograph, and on
+    the first line a scale bar with end ticks from x = bar[0] to bar[1]."""
+    h, w = img.shape
+    txt = Image.new("L", (w // 2, 32), 0)
+    d = ImageDraw.Draw(txt)
+    d.text((4, 2), "Acc.V  Spot Magn   Det  WD", fill=255)
+    d.text((290, 2), "1 um", fill=255)
+    d.text((4, 16), "5.00 kV 3.0  20000x  SE  9.8  GTU", fill=255)
+    text = np.asarray(txt.resize((w, 64), Image.NEAREST)) > 128  # twice the size: 2 px strokes
+    out = img.copy()
+    out[h - 64:][text] = 255
+    out[h - 46:h - 44, bar[0]:bar[1] + 1] = 255
+    out[h - 54:h - 36, bar[0]:bar[0] + 2] = 255
+    out[h - 54:h - 36, bar[1] - 1:bar[1] + 1] = 255
+    return out
+
+
+def test_data_bars_in_figures_and_bars_written_over_the_image(tmp_path):
+    g = _micrograph()
+    # a figure: the image resized and recompressed blurs the bar's graphics
+    for style, scale in (("fei", (60, 159)), ("two-tone", (60, 159))):
+        a = _with_bar(g, 40, style, scale)
+        small = np.asarray(Image.fromarray(a).resize((294, 238), Image.BILINEAR))  # 70%
+        j = _jpeg(small)
+        k = detect_data_bar(j)
+        assert abs(k - 28) <= 2 and abs(measure_data_bar_scale(j, k) - 70) <= 2
+    # a scale bar split by its label, |-- 5 um --|, is measured from end to end
+    a = np.vstack([g, np.zeros((40, g.shape[1]), np.uint8)])
+    im = Image.fromarray(a)
+    d = ImageDraw.Draw(im)
+    d.text((10, 305), "HV 5 kV  WD 4 mm", fill=255)
+    d.rectangle([200, 326, 249, 329], fill=255)
+    d.text((257, 321), "5 um", fill=255)
+    d.rectangle([290, 326, 339, 329], fill=255)
+    a = np.asarray(im)
+    assert detect_data_bar(a) == 40 and measure_data_bar_scale(a, 40) == 140
+    # a data bar written over the micrograph (XL30): found, measured and left out of the analysis
+    x = _xl30(_micrograph(300, 640))
+    assert detect_data_bar(x) == 0
+    k = detect_overlay_bar(x)
+    assert 300 - 244 <= k <= 72  # all of the text (from row 244), and not much more
+    assert measure_data_bar_scale(x, k, overlay=True) == 200
+    assert detect_overlay_bar(_jpeg(x, 85)) == k
+    Image.fromarray(x).save(tmp_path / "xl30.png")
+    res = analyse_sem(load_image(tmp_path / "xl30.png"), PorositySettings(pixel_size_um=0.005))
+    assert res.summary["data_bar_px"] == k and res.summary["data_bar_source"] == "detected (text over the image)"
 
 
 # ---------------------------------------------------------------------- watershed
@@ -472,6 +529,20 @@ def test_repetitions_and_samples_from_awkward_layouts(tmp_path):
     got = specs(*[f"batch-{b}/{n}" for b in (1, 2) for n in names], "batch-3/Membrane_CA_5kx_01.tif",
                 "batch-3/Membrane_CA_5kx_02.tif")
     assert {(g, r) for _, g, r in got} == {(g, b) for g in ("CA", "CA-CNF1") for b in "12"} | {("CA", "3")}
+    # several studies in one tree: folders that share few samples are separate experiments, not
+    # repetitions, and a sample name found in two of them takes its study's folder name
+    got = specs(*[f"papers/{s}/Figure 2/{g}/{g}.tif" for s, gs in (("A 2023", ("neat", "x1", "x2")),
+                                                                   ("B 2024", ("neat", "y1", "y2"))) for g in gs])
+    assert {(g, r) for _, g, r in got} == {("A 2023/neat", "1"), ("x1", "1"), ("x2", "1"), ("B 2024/neat", "1"),
+                                           ("y1", "1"), ("y2", "1")}
+    # ... while repetitions hold mostly the same samples, whatever their folders are called, and
+    # folders named like repetitions are repetitions even when their samples differ
+    got = specs(*[f"{r}/{g}/{g}_1.tif" for r in ("first", "second") for g in ("neat", "x1", "x2")],
+                "second/x3/x3_1.tif")
+    assert {(g, r) for _, g, r in got} == {(g, r) for g in ("neat", "x1", "x2") for r in ("first", "second")} | {
+        ("x3", "second")}
+    got = specs(*[f"day{d}/{g}/{g}_1.tif" for d, gs in ((1, ("neat", "x1")), (2, ("neat", "x2"))) for g in gs])
+    assert {(g, r) for _, g, r in got} == {("neat", "1"), ("x1", "1"), ("neat", "2"), ("x2", "2")}
     # spellings: separators and case do not count, scripts and signs do
     assert group_key("stimulus 30 min") == group_key("Stimulus-30min") and group_key("µm") == group_key("μm")
     assert len({group_key(g) for g in ("PES", "PES+", "PES-", "контроль", "мембрана", "PES-ı", "PES-ş")}) == 7

@@ -69,6 +69,7 @@ Repetitions analysed at different times can be put together afterwards with **Co
 - Spellings that differ only in case, spaces or separators (`stimulus 30 min`, `Stimulus-30min`) are treated as one condition, so repetitions line up; signs count (`drug +` and `drug -` are two conditions).
 - Repetition labels are shortened to what tells the folders apart (`…EXPERIMENT-3`, `…EXPERIMENT-4` → `3`, `4`); folders with the same name (`day1/SEM`, `day2/SEM`) are told apart by the folders above them.
 - A repetition folder that holds only one condition is read the way the other folders are (`Experiment_vehicle-1` → `vehicle`).
+- Repetitions of one experiment hold mostly the same conditions. Folders that share fewer than half of their conditions are separate experiments (unless they are named like repetitions), so a tree of several studies can be added at once: a condition name found in more than one study takes its study's folder name (`Study A/control`, `Study B/control`).
 
 ### How an experiment is summarised
 
@@ -111,7 +112,7 @@ Every field is checked as it is measured, and warnings appear in the preview, th
 1. **Add SEM images.** Use *Add files…* or *Add folder…*, paste a path into the box below them, or drag files or folders onto the table. A folder brings every image in it and in all its subfolders, at any depth. Pores should be the darkest regions; tick *Pores are bright* otherwise.
 2. **Check the samples and repetitions.** They are read from the names (see [Samples and repetitions](#samples-and-repetitions)) and can be edited in the table or with *Set sample…* / *Set repetition…*.
 3. **Check the pixel size of every image.** FEI / Thermo Fisher and Zeiss SEM TIFFs record it, as do calibrated TIFFs (ImageJ, OME); the table shows where each value comes from. For other images, set a *Default pixel size* (the MATLAB script's *Resolution*), type it into the table, or measure the scale bar with *From scale bar…*. A bare TIFF resolution tag, which many programs write, counts only when there is no default, and print resolutions (72–2400 dpi) are ignored. Without a pixel size, sizes are given in pixels.
-4. **Data bar.** The information bar at the bottom of an SEM image is left out automatically: its height is read from the file (FEI / Thermo Fisher) or found as a block of flat graphic rows. Choose *None* or a number of rows to override this.
+4. **Data bar.** The information bar at the bottom of an SEM image is left out automatically: its height is read from the file (FEI / Thermo Fisher) or found in the image, as a block of graphics (also when it is blurred, as in a figure or a screenshot) or as white text written over the bottom of the micrograph (Philips / FEI XL30). *From scale bar…* measures the scale bar in either kind, also one split by its label (|– 5 µm –|). Choose *None* or a number of rows to override this.
 5. **Describe the experiment** (optional). Choose the **reference sample** (e.g. the unmodified membrane), add **comparisons**, set the order of the samples and, if needed, a different reference for a sample's changes. Without comparisons, every sample is compared with the reference.
 6. **Preview** an image. Pores are shaded red with yellow outlines and the left-out data bar is tinted blue; the original, the MATLAB-style depth map, the binary segmentation and the pore segmentation are one click away. The preview lists the porosity, pore count, pore diameters, threshold, pixel size and data bar, and any warnings.
 7. **Analyse all images.** Results open in the *Results* tab and are saved to a new folder next to your images.
@@ -122,7 +123,7 @@ Repetitions analysed at different times can be put together afterwards with **Co
 
 ### Samples and repetitions
 
-- **Automatic (default).** If the file names in a folder name several samples (`Membrane_neat_01.tif`, `Membrane_filled_01.tif` …), the sample is the file name without the parts all names share and without the trailing image number, and **each folder is one repetition** (an independently made membrane or batch). Otherwise **each folder is a sample** and its parent folder the repetition, unless the folders are named like repetitions (`rep1`, `batch 2`, `day-3`, `R4` or a date): then the folder above them is the sample (`CA/batch-1` → sample `CA`, repetition `1`). A sample name found in several places for one repetition takes as much of its path as tells them apart (`PES/neat/batch-1`, `PSf/neat/batch-1` → `PES/neat`, `PSf/neat`).
+- **Automatic (default).** If the file names in a folder name several samples (`Membrane_neat_01.tif`, `Membrane_filled_01.tif` …), the sample is the file name without the parts all names share and without the trailing image number, and **each folder is one repetition** (an independently made membrane or batch). Otherwise **each folder is a sample** and its parent folder the repetition, unless the folders are named like repetitions (`rep1`, `batch 2`, `day-3`, `R4` or a date): then the folder above them is the sample (`CA/batch-1` → sample `CA`, repetition `1`). A sample name found in several places for one repetition takes as much of its path as tells them apart (`PES/neat/batch-1`, `PSf/neat/batch-1` → `PES/neat`, `PSf/neat`). Folders that share fewer than half of their samples are separate studies rather than repetitions, and a sample name found in two studies takes the study's folder name (`Study A/neat`, `Study B/neat`).
 - **File names** or **Folder names** force one of the two. The naming rules are those of Bio & Cells (see [Conditions and repetitions](#conditions-and-repetitions)).
 
 ### How an experiment is summarised
@@ -216,7 +217,7 @@ Options, all off by default so that results match the MATLAB script:
 - **PNG / JPEG:**
   - greyscale, RGB, palette (decoded through the palette) and 16-bit PNG, including 16-bit RGB;
   - single-colour exports (e.g. a blue DAPI snapshot) are recognised and the populated channel is used;
-  - burned-in annotations such as scale bars and text are detected from colour and excluded from every calculation.
+  - burned-in annotations such as scale bars, text, labels and measurements are detected from colour and excluded from every calculation, however much of the image's bright end they make up; black-and-white measurement labels drawn into a micrograph are not recognised, so save images without them (or draw them in colour).
 - **Use raw exports for quantification.** Microscope "snapshots" are display-scaled 8-bit images and JPEG is lossy, so prefer raw TIFF (or 16-bit) exports.
 
 ---
@@ -233,6 +234,7 @@ Options, all off by default so that results match the MATLAB script:
 | *Analyze Particles* area, perimeter and circularity vs ImageJ 1.54 (655 and 782 particles) | **identical** |
 | SEM porosity vs the original MATLAB outputs (Rabbani's sample images, *Resolution* 0.459 µm) | binary segmentation and pore segmentation after the watershed split **pixel-identical**; porosity (0.09945, 0.19567), pore count (330, 453) and mean pore radius identical |
 | SEM watershed vs Meyer's flooding written out pixel by pixel, on 120 random images | identical |
+| SEM data bars and scale bars on 37 micrographs from published membrane figures (resized and JPEG-compressed; graphic bars and bars written over the image) | bars found in 36 of 37; scale bars measured in 32, each within 1 px of the length read by eye, none wrong |
 | Per-cell protocol on synthetic cells with a known N/C of 0.6, 1.0 and 2.5 | per-cell median 0.63, 0.99 and 2.26; the paper method gives 0.71, 1.03 and 2.18 (pulled towards 1) |
 
 The ImageJ comparisons can be re-run with the Java programs in [`validation/`](validation). The unit tests (`pytest`) check stored ImageJ and MATLAB reference values, and `microscount selftest` runs a quick check of the main steps on any computer.

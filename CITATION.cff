@@ -5,7 +5,7 @@ type: software
 authors:
   - family-names: "Tüfekci"
     given-names: "Mertol"
-version: "0.3.1"
+version: "0.3.2"
 date-released: "2026-10-03"
 license: GPL-3.0-or-later
 repository-code: "https://github.com/mertol93/microscount"

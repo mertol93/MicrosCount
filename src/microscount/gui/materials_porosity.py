@@ -179,8 +179,9 @@ class PorosityPage(QWidget):
         f.addRow(self.cb_meta)
         barrow = QHBoxLayout()
         self.bar = _combo(DATA_BAR_ITEMS, "The SEM data bar at the bottom of the image is left out. Automatic: its "
-                                          "height from the file (FEI / Thermo Fisher) or found as a block of flat "
-                                          "graphic rows.")
+                                          "height from the file (FEI / Thermo Fisher) or found in the image, as a "
+                                          "block of graphics (also blurred, as in a figure) or as white text "
+                                          "written over the micrograph (XL30).")
         self.crop = QSpinBox()
         self.crop.setRange(0, 10000)
         self.crop.setSuffix(" px")
@@ -632,7 +633,7 @@ class PorosityPage(QWidget):
 
     def pixel_from_scale_bar(self):
         from ..core.imageio import load_image
-        from ..materials.porosity import detect_data_bar, grey_from_image, measure_data_bar_scale
+        from ..materials.porosity import detect_data_bar, detect_overlay_bar, grey_from_image, measure_data_bar_scale
 
         rows = self._rows()
         if not rows:
@@ -645,6 +646,9 @@ class PorosityPage(QWidget):
             grey, _ = grey_from_image(img)
             bar = (img.metadata or {}).get("data_bar_px") or detect_data_bar(grey)
             length = measure_data_bar_scale(grey, bar) if bar else None
+            if length is None:  # a data bar written over the micrograph
+                over = detect_overlay_bar(grey)
+                length = measure_data_bar_scale(grey, over, overlay=True) if over else None
         except Exception:  # noqa: BLE001
             length = None
         dlg = ScaleBarDialog(self, length)

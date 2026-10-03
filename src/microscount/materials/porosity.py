@@ -19,8 +19,9 @@ Around the MATLAB core, for images straight from the microscope:
 
 * the pixel size of every image: typed, read from the SEM metadata (FEI / Thermo
   Fisher, Zeiss) or the TIFF calibration, or a default for all images;
-* the SEM data bar: its height from the FEI / Thermo Fisher metadata, or found as the
-  block of flat graphic rows at the bottom of the image, is left out;
+* the SEM data bar: its height from the FEI / Thermo Fisher metadata, or found at the
+  bottom of the image (a block of graphics, blurred or not, or text drawn over the
+  micrograph), is left out;
 * per pore: equivalent diameter, perimeter and circularity (ImageJ's traced perimeter);
   per image: diameter statistics (mean, median, d10, d90, area-weighted mean, largest),
   pore density and quality checks.
@@ -136,8 +137,10 @@ def _fminsearch(fun, x0, tolx=1e-4, tolf=1e-4, maxiter=None, maxfun=None) -> np.
     v, fv = v[order], fv[order]
     itercount, func_evals = 1, n + 1
     while func_evals < maxfun and itercount < maxiter:
-        if (np.max(np.abs(fv[0] - fv[1:])) <= max(tolf, 10 * np.spacing(fv[0]))
-                and np.max(np.abs(v[1:] - v[0])) <= max(tolx, 10 * np.spacing(np.max(v[0])))):
+        with np.errstate(invalid="ignore"):  # Inf - Inf when the whole simplex is outside the domain
+            done = (np.max(np.abs(fv[0] - fv[1:])) <= max(tolf, 10 * np.spacing(fv[0]))
+                    and np.max(np.abs(v[1:] - v[0])) <= max(tolx, 10 * np.spacing(np.max(v[0]))))
+        if done:
             break
         xbar = v[:n].sum(axis=0) / n
         xr = (1 + rho) * xbar - rho * v[-1]
@@ -427,26 +430,32 @@ def _graphic_rows(a8: np.ndarray, tol: int = 3) -> np.ndarray:
 def detect_data_bar(grey: np.ndarray, max_fraction: float = 0.35, min_rows: int = 8) -> int:
     """Height in rows of an SEM information bar at the bottom of an image (0 if there is none).
 
-    A data bar is drawn graphics: nearly every pixel of each of its rows has one of two
-    values (background and text, within 3 grey levels for JPEG), unlike the noisy
-    micrograph above it. The bar is the tallest such block at the bottom, at most
-    ``max_fraction`` of the image, with ordinary image rows just above it.
+    In the microscope's own file a data bar is drawn graphics: nearly every pixel of each of its
+    rows has one of two values (background and text, within 3 grey levels for JPEG), unlike the
+    noisy micrograph above it. In a resized or recompressed copy (a figure, a screenshot) the
+    graphics are blurred, so the bar is then found as a full-width block of near-black or
+    near-white background with text in it, under a straight edge where the micrograph ends.
+    A bar drawn as text over the micrograph is found by :func:`detect_overlay_bar`.
     """
     a = _to8(np.asarray(grey))
     h, w = a.shape
     if h < 5 * min_rows or w < 32:
         return 0
+    # blurred, the graphic rows are only the bar's lower part: the taller finding is the bar
+    return max(_graphic_bar(a, max_fraction, min_rows), _toned_bar(a, max_fraction, min_rows))
+
+
+def _graphic_bar(a: np.ndarray, max_fraction: float, min_rows: int) -> int:
+    h = a.shape[0]
     g = _graphic_rows(a) >= 0.75
-    limit = int(h * max_fraction)
     best = 0
-    for k in range(min_rows, limit + 1):
+    for k in range(min_rows, int(h * max_fraction) + 1):
         top = h - k
         if not g[top] or g[top - 1]:
             continue  # the bar's top row is graphic and the row above it is not
         if g[top:].mean() < 0.9:
             continue
-        above = g[max(0, top - 8):top]
-        if above.mean() <= 0.5:
+        if g[max(0, top - 8):top].mean() <= 0.5:
             best = k
     if best:  # a data bar carries text and a scale bar: a flat strip of one tone is not one
         bar = a[h - best:]
@@ -456,32 +465,207 @@ def detect_data_bar(grey: np.ndarray, max_fraction: float = 0.35, min_rows: int 
     return best
 
 
-def measure_data_bar_scale(grey: np.ndarray, bar_rows: int) -> float | None:
-    """Length in pixels of the scale bar drawn in an SEM data bar, or None.
+def _toned_bar(a: np.ndarray, max_fraction: float, min_rows: int) -> int:
+    """A blurred data bar: the background tones of its bottom rows, a straight top edge, text."""
+    a = a.astype(np.int16)
+    h, w = a.shape
+    foot = a[h - 8:]
+    hist = np.bincount(foot.ravel(), minlength=256)
+    tones = []  # near-black and near-white backgrounds (a bar may have both, in panels)
+    if hist[:61].sum() >= 0.2 * foot.size:
+        tones.append(int(np.argmax(hist[:61])))
+    if hist[195:].sum() >= 0.2 * foot.size:
+        tones.append(195 + int(np.argmax(hist[195:])))
+    if not tones:
+        return 0
+    near = np.zeros(a.shape, bool)
+    close = np.zeros(a.shape, bool)  # the bar's own tone, tightly: a dark micrograph is not black
+    for t in tones:
+        near |= np.abs(a - t) <= 25
+        close |= np.abs(a - t) <= 12
+    like, tight = near.mean(axis=1), close.mean(axis=1)
+    for top in range(max(1, h - int(h * max_fraction)), h - min_rows + 1):  # the highest edge that qualifies
+        if like[top] < 0.6 or like[top:].mean() < 0.45 or tight[max(0, top - 6):top].mean() > 0.35:
+            continue
+        step = np.zeros(w, bool)  # a straight edge: most columns step towards the bar's tone here
+        for t in tones:
+            step |= (np.abs(a[top] - t) <= 25) & (np.abs(a[top - 1] - a[top]) >= 20)
+        if step.mean() < 0.6 or (near[top:].mean(axis=0) >= 0.3).mean() < 0.85:
+            continue  # ... and the background spans the width
+        block = a[top:]
+        far = np.ones(block.shape, bool)
+        for t in tones:
+            far &= np.abs(block - t) >= 80
+        two_tone = len(tones) == 2 and min((np.abs(block - t) <= 25).mean() for t in tones) >= 0.1
+        if far.mean() < 0.01 and not two_tone:
+            continue  # one flat tone without text: an empty strip, not a data bar
+        return h - top
+    return 0
 
-    The scale bar is the longest solid horizontal bar among the bright and the dark shapes
-    of the data bar: 2-20 rows thick where it is full width (end ticks allowed), between
-    3% and 60% of the image width, and not a panel of the bar.
+
+def _text_lines(a: np.ndarray, top0: int, bottom: int | None = None, words: int = 2) -> list[tuple]:
+    """Lines of bright text in rows ``top0:bottom``: [(top, bottom, x0, x1)].
+
+    Characters are thin bright shapes (they stand out of a white top-hat) of a text height; a line
+    is ``words`` or more words of three or more characters standing on one baseline.
+    """
+    h, w = a.shape
+    reg = a[top0:bottom]
+    k = max(5, int(round(h / 100)) | 1)
+    tophat = reg.astype(np.int16) - ndi.grey_opening(reg, size=(k, k)).astype(np.int16)
+    lab, _ = ndi.label((reg >= 190) & (tophat >= 50), structure=np.ones((3, 3)))
+    chars = []
+    for i, sl in enumerate(ndi.find_objects(lab), start=1):
+        if sl is None:
+            continue
+        hh, ww = sl[0].stop - sl[0].start, sl[1].stop - sl[1].start
+        if 0.012 * h <= hh <= 0.06 * h and ww <= 1.6 * hh and (lab[sl] == i).sum() >= 0.15 * hh * ww:
+            chars.append((sl[0].start, sl[0].stop, sl[1].start, sl[1].stop))
+    if len(chars) < 3 * words:
+        return []
+    med = float(np.median([c[1] - c[0] for c in chars]))
+    tol = max(2.0, 0.12 * med)
+    lines, used = [], set()
+    for i, c in sorted(enumerate(chars), key=lambda t: t[1][1]):
+        if i in used:
+            continue
+        on_line = [j for j, d in enumerate(chars) if j not in used and abs(d[1] - c[1]) <= tol]
+        row = sorted((chars[j] for j in on_line), key=lambda d: d[2])
+        found, cur = [], [row[0]]
+        for d in row[1:]:
+            if d[2] - cur[-1][3] <= 0.6 * max(med, d[1] - d[0]):
+                cur.append(d)
+            else:
+                found.append(cur)
+                cur = [d]
+        found.append(cur)
+        good = [d for wd in found if len(wd) >= 3 for d in wd]
+        if sum(len(wd) >= 3 for wd in found) >= words and len(good) >= 3 * words:
+            lines.append((top0 + min(d[0] for d in good), top0 + max(d[1] for d in good),
+                          min(d[2] for d in good), max(d[3] for d in good)))
+            used.update(on_line)
+    return lines
+
+
+def detect_overlay_bar(grey: np.ndarray, max_fraction: float = 0.25) -> int:
+    """Rows at the bottom of an image covered by a data bar drawn as white text over the micrograph
+    (Philips / FEI XL30 style), 0 if there is none.
+
+    The bar is the band from the top of the text lines at the bottom (each spanning at least a fifth
+    of the width) to the bottom of the image.
+    """
+    a = _to8(np.asarray(grey))
+    h, w = a.shape
+    if h < 100 or w < 100:
+        return 0
+    lines = [ln for ln in _text_lines(a, int(h * (1 - max_fraction))) if ln[3] - ln[2] >= 0.2 * w]
+    if not lines:
+        return 0
+    top = min(ln[0] for ln in lines)
+    lh = float(np.median([ln[1] - ln[0] for ln in lines]))
+    for _ in range(2):  # a shorter line just above (e.g. the labels beside the scale bar)
+        above = _text_lines(a, max(0, int(top - 2.5 * lh)), top, words=1)
+        if not above:
+            break
+        top = min(ln[0] for ln in above)
+    return int(h - max(0, top - 0.4 * lh))
+
+
+def _line_runs(mask: np.ndarray, min_len: int, max_len: int, max_rows: int = 20, gap: int = 0) -> list[tuple]:
+    """Free-standing horizontal bars of a mask: [(y0, y1, x0, x1)], each row a run of similar extent
+    (runs of a row ``gap`` pixels apart or less count as one)."""
+    h, w = mask.shape
+    runs = []
+    for y in range(h):
+        d = np.diff(np.r_[0, mask[y].astype(np.int8), 0])
+        row: list[list[int]] = []
+        for s, e in zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1)):
+            if row and s - row[-1][1] <= gap:
+                row[-1][1] = int(e)
+            else:
+                row.append([int(s), int(e)])
+        runs += [[y, y, s, e] for s, e in row if min_len <= e - s <= max_len]
+    bars: list[list[int]] = []
+    for r in sorted(runs):
+        for b in bars:
+            if b[1] == r[0] - 1 and abs(b[2] - r[2]) <= 2 and abs(b[3] - r[3]) <= 2:
+                b[1], b[2], b[3] = r[0], min(b[2], r[2]), max(b[3], r[3])
+                break
+        else:
+            bars.append(list(r))
+    out = []
+    for y0, y1, s, e in bars:
+        if y1 - y0 + 1 > max_rows:
+            continue
+        up = mask[y0 - 1, s:e].mean() if y0 > 0 else 0.0  # little of the same tone just above and below
+        dn = mask[y1 + 1, s:e].mean() if y1 + 1 < h else 0.0
+        if up <= 0.5 and dn <= 0.5:
+            out.append((y0, y1, s, e))
+    return out
+
+
+def _tick(mask: np.ndarray, y0: int, y1: int, x: int, outward: int) -> int | None:
+    """Column of an end tick within 2 px of the bar's end ``x`` - the outermost column that continues
+    at least 3 rows above or below the bar - or None."""
+    h, w = mask.shape
+    found = None
+    for c in range(max(0, x - 2), min(w, x + 3)):
+        up = 0
+        while y0 - up - 1 >= 0 and mask[y0 - up - 1, c]:
+            up += 1
+        dn = 0
+        while y1 + dn + 1 < h and mask[y1 + dn + 1, c]:
+            dn += 1
+        if max(up, dn) >= 3 and (found is None or (c - found) * outward > 0):
+            found = c
+    return found
+
+
+def measure_data_bar_scale(grey: np.ndarray, bar_rows: int, overlay: bool = False) -> float | None:
+    """Length in pixels of the scale bar in the bottom ``bar_rows`` rows (a data bar), or None.
+
+    A scale bar is a free-standing horizontal bar of 3-60% of the image width that does not touch
+    the image sides (frame lines do), found among the shapes brighter and darker than the bar's
+    background. A bar split by its label (|-- 5 um --|) is measured from end to end. A bar drawn
+    over the micrograph (``overlay``) must be near-white or near-black and have end ticks.
     """
     if bar_rows <= 0:
         return None
     a = _to8(np.asarray(grey))[-bar_rows:]
     h, w = a.shape
-    best = 0
-    for mask in (a > 127, a <= 127):
-        lab, n = ndi.label(mask, structure=np.ones((3, 3)))
-        for i, sl in enumerate(ndi.find_objects(lab), start=1):
-            if sl is None:
-                continue
-            ys, xs = sl
-            width, height = xs.stop - xs.start, ys.stop - ys.start
-            if not 0.03 * w <= width <= 0.6 * w or height > max(25, 0.5 * h):
-                continue
-            comp = lab[sl] == i
-            body = int((comp.sum(axis=1) >= 0.9 * width).sum())  # rows the bar fills from end to end
-            if 2 <= body <= 20:
-                best = max(best, width)
-    return float(best) if best else None
+    if overlay:  # a thin line over the micrograph: at least 8% of the width, a dimmer pixel bridged
+        masks, gap, shortest = [a >= 215, a <= 40], 1, int(0.08 * w)
+    else:
+        med = float(np.median(a))
+        masks = [a >= med + 60] if med < 128 else [a <= med - 60]
+        masks += [a > 127, a <= 127]
+        gap, shortest = 0, int(0.03 * w)
+    def length(left: tuple, right: tuple) -> int | None:  # from end to end; over the image, tick to tick
+        if not overlay:
+            return right[3] - left[2]
+        a_ = _tick(mask, left[0], left[1], left[2], -1)
+        b_ = _tick(mask, right[0], right[1], right[3] - 1, 1)
+        return None if a_ is None or b_ is None else b_ - a_ + 1
+
+    for mask in masks:
+        halves = _line_runs(mask, max(4, int(0.04 * w)), int(0.6 * w), gap=gap)
+        split = []
+        for p in halves:
+            for q in halves:
+                if q[2] <= p[3] or abs(p[0] - q[0]) > 1 or abs(p[1] - q[1]) > 1:
+                    continue
+                lp, lq, span = p[3] - p[2], q[3] - q[2], q[3] - p[2]
+                if q[2] - p[3] <= 0.6 * span and abs(lp - lq) <= 0.25 * max(lp, lq) and span <= 0.6 * w:
+                    split.append(length(p, q))
+        split = [v for v in split if v]
+        if split:
+            return float(max(split))
+        whole = [length(r, r) for r in _line_runs(mask, max(8, shortest), int(0.6 * w), gap=gap)
+                 if r[2] > 1 and r[3] < w - 2]
+        whole = [v for v in whole if v]
+        if whole:
+            return float(max(whole))
+    return None
 
 
 def _percentile(v: np.ndarray, q: float) -> float:
@@ -538,16 +722,20 @@ def analyse_sem(
     # data bar
     full = grey
     detected = detect_data_bar(grey)
+    overlaid = 0 if detected else detect_overlay_bar(grey)
     if s.data_bar == "manual":
         crop, crop_source = int(s.crop_bottom_px or 0), "manual"
     elif s.data_bar == "none":
         crop, crop_source = 0, "none"
-        if detected:
-            warns.append(f"the bottom {detected} rows look like an SEM data bar but are analysed (data bar: none)")
+        if detected or overlaid:
+            warns.append(f"the bottom {detected or overlaid} rows look like an SEM data bar but are analysed "
+                         "(data bar: none)")
     elif meta.get("data_bar_px"):
         crop, crop_source = int(meta["data_bar_px"]), f"{meta.get('instrument', 'file')} metadata"
+    elif detected:
+        crop, crop_source = detected, "detected"
     else:
-        crop, crop_source = detected, "detected" if detected else "none found"
+        crop, crop_source = overlaid, "detected (text over the image)" if overlaid else "none found"
     crop = int(np.clip(crop, 0, grey.shape[0] - 1))
     valid = np.ones(grey.shape, bool)
     if img.annotation_mask is not None:

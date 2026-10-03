@@ -10,8 +10,11 @@
 Spellings that differ only in case, spaces or separators (``stimulus 30 min`` and
 ``Stimulus-30min``) are one group, so repetitions line up. Folders with the same name are
 told apart by the folders above them, and a folder that holds one group only is read the
-way the other folders are. The functions work on any objects that carry the group
-attribute, ``repetition`` and ``field_no``.
+way the other folders are. Repetitions of one experiment hold mostly the same groups:
+folders that share few of their groups (two studies that both have a ``neat`` sample)
+are separate experiments, and a group name found in several of them takes the
+experiment's folder name (``StudyA/neat``). The functions work on any objects that carry
+the group attribute, ``repetition`` and ``field_no``.
 """
 
 from __future__ import annotations
@@ -181,13 +184,16 @@ def assign_groups(items: list, path_of: Callable, name_of: Callable | None = Non
         else:
             known = list(dict.fromkeys(b for f in multi for b in parsed[f][0]))
             single = {f: _single_group(names[f], parsed[f][0][0], [names[m] for m in multi], known) for f in singles}
-        reps = path_labels(list(folders)) if len(folders) > 1 else {}
+        sets = {f: {group_key(single.get(f, b)) for b in parsed[f][0]} for f in folders}
+        rep, exp = _split_experiments(sets)
+        shared = _shared_groups(sets, exp)
         for f, its in folders.items():
             bases, nums = parsed[f]
             for it, base, n in zip(its, bases, nums):
-                setattr(it, attr, single.get(f, base))
+                g = single.get(f, base)
+                setattr(it, attr, f"{exp[f]}/{g}" if group_key(g) in shared else g)
                 it.field_no = n
-                it.repetition = reps.get(f, "1")
+                it.repetition = rep[f]
     else:
         group, rep = _folder_groups(list(folders))
         for f, its in folders.items():
@@ -223,8 +229,13 @@ def _folder_groups(folders: list[str]) -> tuple[dict[str, str], dict[str, str]]:
     swap = all(looks_like_repetition(n) for n in names.values()) and not all(
         looks_like_repetition(Path(p).name) for p in parent.values())
     if not swap:
-        reps = path_labels(list(parent.values())) if len(set(parent.values())) > 1 else {}
-        return dict(names), {f: reps.get(parent[f], "1") for f in folders}
+        sets: dict[str, set[str]] = {}
+        for f in folders:
+            sets.setdefault(parent[f], set()).add(group_key(names[f]))
+        rep, exp = _split_experiments(sets)
+        shared = _shared_groups(sets, exp)
+        group = {f: f"{exp[parent[f]]}/{n}" if group_key(n) in shared else n for f, n in names.items()}
+        return group, {f: rep[parent[f]] for f in folders}
     short = short_labels(list(names.values())) if len(set(names.values())) > 1 else {}
     rep = {f: short.get(names[f], names[f]) if short else "1" for f in folders}
     group = {f: Path(parent[f]).name for f in folders}
@@ -243,6 +254,71 @@ def _folder_groups(folders: list[str]) -> tuple[dict[str, str], dict[str, str]]:
             if parent[f] in dirs:
                 group[f] = "/".join(parts[parent[f]][-k:])
     return group, rep
+
+
+def _split_experiments(sets: dict[str, set[str]]) -> tuple[dict[str, str], dict[str, str]]:
+    """Repetition and experiment label of each folder, from the groups each folder holds.
+
+    Folders are repetitions of one experiment when they share at least half of their groups
+    (Jaccard index), directly or through other folders, or when both are named like
+    repetitions (``rep1``, a date). Repetitions are labelled within their experiment and
+    experiments by the first part of their path that tells them apart; with one experiment
+    the experiment label is empty.
+    """
+    dirs = list(sets)
+    root = {d: d for d in dirs}
+
+    def find(d: str) -> str:
+        while root[d] != d:
+            root[d] = root[root[d]]
+            d = root[d]
+        return d
+
+    for i, a in enumerate(dirs):
+        for b in dirs[i + 1:]:
+            sa, sb = sets[a], sets[b]
+            linked = bool(sa and sb) and len(sa & sb) >= 0.5 * len(sa | sb)
+            if linked or (looks_like_repetition(Path(a).name) and looks_like_repetition(Path(b).name)):
+                root[find(b)] = find(a)
+    experiments: dict[str, list[str]] = {}
+    for d in dirs:
+        experiments.setdefault(find(d), []).append(d)
+    names = _experiment_names(list(experiments.values())) if len(experiments) > 1 else {}
+    rep, exp = {}, {}
+    for key, members in experiments.items():
+        reps = path_labels(members) if len(members) > 1 else {}
+        for d in members:
+            rep[d], exp[d] = reps.get(d, "1"), names.get(key, "")
+    return rep, exp
+
+
+def _experiment_names(experiments: list[list[str]]) -> dict[str, str]:
+    """Experiment label of each folder: the first parts of its experiment's shared path, after
+    the path all experiments share, that tell the experiments apart."""
+    try:
+        bases = [os.path.commonpath(m) if len(m) > 1 else m[0] for m in experiments]
+        top = os.path.commonpath(bases) if len(bases) > 1 else ""
+        rel = [Path(os.path.relpath(b, top)).parts if top else Path(b).parts for b in bases]
+    except ValueError:  # different drives
+        rel = [Path(m[0]).parts for m in experiments]
+    k = 1
+    while len({"/".join(r[:k]) for r in rel}) < len(rel) and any(len(r) > k for r in rel):
+        k += 1
+    out = {}
+    for m, r in zip(experiments, rel):
+        label = "/".join(r[:k]) if r and r != (".",) else Path(m[0]).name
+        for d in m:
+            out[d] = label
+    return out
+
+
+def _shared_groups(sets: dict[str, set[str]], exp: dict[str, str]) -> set[str]:
+    """Group keys found in more than one experiment."""
+    where: dict[str, set[str]] = {}
+    for d, keys in sets.items():
+        for k in keys:
+            where.setdefault(k, set()).add(exp[d])
+    return {k for k, e in where.items() if len(e) > 1}
 
 
 def unify_groups(items: list, attr: str = "condition") -> None:

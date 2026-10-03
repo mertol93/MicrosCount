@@ -83,6 +83,29 @@ def test_grey_as_rgb_is_grey(tmp_path):
     assert img.kind == "grey" and np.array_equal(img.channel(), g)
 
 
+def test_grey_with_coloured_labels_is_grey(tmp_path):
+    """Labels and a scale bar drawn in colour on a grey micrograph are left out, however much of the
+    bright end of the image they make up; sparse colour on a dark background stays a colour image."""
+    rng = np.random.default_rng(3)
+    g = rng.integers(90, 170, (200, 300)).astype(np.uint8)
+    rgb = np.stack([g] * 3, -1)
+    rgb[20:40, 30:110] = (255, 0, 0)  # label boxes and a yellow scale bar: about 6% of the pixels
+    rgb[100:120, 150:230] = (255, 0, 0)
+    rgb[170:174, 20:120] = (255, 255, 0)
+    Image.fromarray(rgb).save(tmp_path / "labelled.png")
+    img = load_image(tmp_path / "labelled.png")
+    m = img.annotation_mask
+    assert img.kind == "grey" and m[30, 70] and m[110, 200] and m[172, 50] and not m[70, 200]
+    assert np.array_equal(img.channel()[~m], g[~m])
+    for background in (rng.integers(0, 12, (200, 300, 3)), np.zeros((200, 300, 3))):
+        cells = background.astype(np.uint8)
+        cells[50:70, 50:70] = (200, 30, 30)
+        cells[120:140, 200:220] = (30, 200, 30)
+        cells[150:160, 100:110] = (30, 30, 200)
+        Image.fromarray(cells).save(tmp_path / "cells.png")
+        assert load_image(tmp_path / "cells.png").kind == "merged_rgb"
+
+
 def test_png16_rgb_full_precision(tmp_path):
     png = pytest.importorskip("png")
     a = (np.arange(10 * 12 * 3, dtype=np.uint16).reshape(10, 12, 3) * 97) % 65535

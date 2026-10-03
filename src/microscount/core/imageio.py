@@ -503,15 +503,32 @@ def _classify_rgb(rgb: np.ndarray, lossy: bool):
     if informative.sum() < 100:
         informative = np.ones_like(maxc, dtype=bool)
 
-    def same(a, b):
-        return np.mean(np.abs(sub[a][informative] - sub[b][informative]) <= tol_eq) >= 0.98
+    def same(a, b, sel=informative):
+        return np.mean(np.abs(sub[a][sel] - sub[b][sel]) <= tol_eq) >= 0.98
 
     if len(populated) == 3 and same(0, 1) and same(1, 2):
+        return "grey", None, None, empty
+    if len(populated) == 3 and _grey_under_overlays(sub, maxc, tol_empty, same, lossy):
         return "grey", None, None, empty
     if len(populated) == 1 or all(same(populated[0], c) for c in populated[1:]):
         colour = _COLOUR_BY_SET[frozenset(populated)]
         return "single_colour", populated[0], colour, empty
     return "merged_rgb", None, None, empty
+
+
+def _grey_under_overlays(sub: np.ndarray, maxc: np.ndarray, tol_empty: int, same, lossy: bool) -> bool:
+    """A grey image carrying coloured overlays (labels, measurements, a scale bar).
+
+    The overlays are bright, so they can make up most of the brightest pixels; the image is grey
+    when strongly coloured pixels are a minority and the brightest of the other pixels are grey.
+    """
+    spread = sub.max(axis=0) - sub.min(axis=0)
+    overlay = ndi.binary_dilation(spread > (60 if lossy else 40), iterations=2)
+    if not 0 < overlay.mean() <= 0.25:
+        return False
+    rest = ~overlay
+    rest &= maxc >= max(tol_empty + 10, np.percentile(maxc[rest], 90))
+    return int(rest.sum()) >= 100 and same(0, 1, rest) and same(1, 2, rest)
 
 
 def _annotation_from_empty(rgb: np.ndarray, empty: list[int], lossy: bool) -> np.ndarray | None:
