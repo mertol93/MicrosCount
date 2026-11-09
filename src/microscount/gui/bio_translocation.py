@@ -31,7 +31,10 @@ CHANNELS = [("Automatic", "auto"), ("Blue", "blue"), ("Green", "green"), ("Red",
             ("Channel 1 (index 0)", "ch0"), ("Channel 2 (index 1)", "ch1"), ("Channel 3 (index 2)", "ch2"),
             ("Channel 4 (index 3)", "ch3")]
 BACKGROUND = [("Cell-free area (automatic)", "auto"), ("Manual value", "manual"), ("None", "none")]
-CYTOPLASM = [("Perinuclear ring", "ring"), ("Cell territory", "territory")]
+CYTOPLASM = [("Whole cell: nucleus to cell outline", "cell"), ("Perinuclear ring", "ring"),
+             ("Cell territory", "territory")]
+CELL_THRESHOLD = [("Automatic: above the background noise", "noise")] + \
+                 [(v, k) for k, v in METHOD_LABELS.items()]
 
 FIELD_COLS = [("field", "Field"), ("condition", "Condition"), ("repetition", "Repetition"), ("n_cells_analysed", "Cells"),
               ("median_nc", "Median N/C"), ("q1_nc", "Q1"), ("q3_nc", "Q3"), ("median_cn", "Median C/N"),
@@ -199,9 +202,11 @@ class TranslocationPage(QWidget):
         v2.addWidget(paper)
         self.cb_cell = QCheckBox("Also measure every cell (lab protocol)")
         self.cb_cell.setToolTip("Nuclei are found in the nuclear stain as by ImageJ Analyze Particles (size and "
-                                "circularity filters), the target is background-subtracted with the rolling ball, and "
-                                "for every cell: Nuc_corr = Nuc_Mean - Background_Mean, Cyto_corr = Cyto_Mean - "
-                                "Background_Mean, N/C = Nuc_corr / Cyto_corr (C/N is reported too).")
+                                "circularity filters; boundary 1), the target is background-subtracted with the "
+                                "rolling ball, every cell is outlined on the target (boundary 2), and for every cell,"
+                                " on the target only: Nuc_Mean inside boundary 1, Cyto_Mean between boundaries 1 and "
+                                "2, Nuc_corr = Nuc_Mean - Background_Mean, Cyto_corr = Cyto_Mean - Background_Mean, "
+                                "N/C = Nuc_corr / Cyto_corr (C/N is reported too).")
         self.cb_cell.toggled.connect(self._sync_enabled)
         v2.addWidget(self.cb_cell)
         self.method_note = QLabel("")
@@ -250,7 +255,7 @@ class TranslocationPage(QWidget):
         circ_row.addWidget(QLabel("–"))
         circ_row.addWidget(self.circ_max, 1)
         f3.addRow("Circularity:", circ_row)
-        self.cb_border = QCheckBox("Exclude nuclei touching the image edge")
+        self.cb_border = QCheckBox("Exclude cells whose nucleus or outline touches the image edge")
         f3.addRow(self.cb_border)
         self.rb_radius = _dspin(0, 5000, 50, 1, 5, "off", " px", "Process ▸ Subtract Background (rolling ball) on the "
                                 "target channel before measuring. The protocol uses 30–50 px.")
@@ -263,9 +268,15 @@ class TranslocationPage(QWidget):
         bgrow.addWidget(self.bg, 2)
         bgrow.addWidget(self.bg_val, 1)
         f3.addRow("Background_Mean:", bgrow)
+        self.cyto = _combo(CYTOPLASM, "Where Cyto_Mean is measured. Whole cell: the nucleus found in the nuclear "
+                                      "stain is boundary 1, the outline of the cell on the target channel boundary 2, "
+                                      "and the cytoplasm is the area between them. Perinuclear ring: a ring of fixed "
+                                      "width around the nucleus. Cell territory: cell pixels within reach of the "
+                                      "nucleus.")
+        f3.addRow("Cytoplasm:", self.cyto)
         self.ring = _dspin(0, 500, 0, 1, 1, "automatic", " px", "Width of the cytoplasmic ring around each nucleus "
                            "where Cyto_Mean is measured (automatic = 0.3 x nucleus diameter).")
-        f3.addRow("Cytoplasm ring width:", self.ring)
+        f3.addRow("   ring width:", self.ring)
         self.cb_sat = QCheckBox("Ignore saturated pixels (and cells with >5% saturation)")
         f3.addRow(self.cb_sat)
         self.adv_btn = QToolButton()
@@ -309,17 +320,29 @@ class TranslocationPage(QWidget):
         self.erode.setToolTip("Pixels trimmed from each nucleus edge before measuring Nuc_Mean (0 = the whole "
                               "particle, as ImageJ measures it).")
         fa.addRow("Nucleus edge trim (px):", self.erode)
-        self.gap = _dspin(0, 50, 0, 1, 1, suffix=" px", tip="Gap between the nucleus and the cytoplasmic ring.")
-        fa.addRow("Ring gap:", self.gap)
-        self.cyto = _combo(CYTOPLASM)
-        fa.addRow("Cytoplasm region:", self.cyto)
+        self.gap = _dspin(0, 50, 0, 1, 1, suffix=" px", tip="Gap left between the nucleus and its cytoplasm "
+                          "(0 = the cytoplasm starts at boundary 1).")
+        fa.addRow("Gap around the nucleus:", self.gap)
+        self.cell_thr = _combo(CELL_THRESHOLD, "Boundary 2 (whole cell): where the background-subtracted, smoothed "
+                               "target counts as cell. Automatic: where it rises above the background noise (see "
+                               "below), with the outer edge then moved in to its half maximum so that the blur halo "
+                               "around bright cells is not counted as cytoplasm. With an ImageJ method or a manual "
+                               "value the outline is that threshold's, as ImageJ draws it.")
+        self.cell_thr_val = _dspin(0, 1e9, 0, 2, 1, tip="Used when the cell outline threshold is 'Manual value' "
+                                   "(grey value of the background-subtracted target).")
+        fa.addRow("Cell outline threshold:", self.cell_thr)
+        fa.addRow("   manual value:", self.cell_thr_val)
+        self.cell_smooth = _dspin(0, 20, 2, 1, 0.5, "off", " px", "Gaussian smoothing of the target before the cell "
+                                  "outlines are found (measurements are never smoothed).")
+        fa.addRow("Cell outline smoothing:", self.cell_smooth)
         self.territory = _dspin(0, 1000, 0, 1, 1, "automatic", " px", "Reach of the cell territory (automatic = "
                                 "1 x nucleus diameter).")
         fa.addRow("Territory reach:", self.territory)
-        self.cb_restrict = QCheckBox("Leave out ring pixels at background level (off the cell)")
+        self.cb_restrict = QCheckBox("Ring or territory: leave out pixels at background level (off the cell)")
         fa.addRow(self.cb_restrict)
         self.cell_sig = _dspin(0, 20, 3, 1, 0.5, tip="A pixel belongs to a cell when the background-subtracted target "
-                               "exceeds the background by this many noise SDs (also defines the cell-free area).")
+                               "exceeds the background by this many noise SDs (the automatic cell outline; also "
+                               "defines the cell-free area).")
         fa.addRow("Cell detection (x noise SD):", self.cell_sig)
         self.resp = _dspin(0, 100, 1.0, 2, 0.1, "none", tip="Report the fraction of cells with N/C above this value.")
         fa.addRow("Responder cut-off (N/C):", self.resp)
@@ -328,12 +351,14 @@ class TranslocationPage(QWidget):
         self._cell_widgets = [self.cell_hdr, self.size_min, self.size_max, self.circ_min, self.circ_max, self.cb_border,
                               self.rb_radius, self.bg, self.ring, self.cb_sat, self.adv_cell_hdr, self.smooth,
                               self.cb_split, self.split_sens, self.diam, self.erode, self.gap, self.cyto,
-                              self.cb_restrict, self.cell_sig, self.resp]
+                              self.cb_restrict, self.cell_sig, self.resp, self.cell_thr, self.cell_thr_val,
+                              self.cell_smooth]
         self.nuc_thr.currentIndexChanged.connect(self._sync_target_threshold)
         self.nuc_thr.currentIndexChanged.connect(self._sync_enabled)
         self.tgt_thr.currentIndexChanged.connect(self._sync_enabled)
         self.bg.currentIndexChanged.connect(self._sync_enabled)
         self.cyto.currentIndexChanged.connect(self._sync_enabled)
+        self.cell_thr.currentIndexChanged.connect(self._sync_enabled)
         lv.addWidget(g3)
 
         g5 = QGroupBox("4   Experiment")
@@ -458,8 +483,8 @@ class TranslocationPage(QWidget):
         self.hover_label = QLabel(" ")
         self.hover_label.setStyleSheet("color:#52514e")
         pvl.addWidget(self.hover_label)
-        legend = QLabel("<span style='color:#00b8d4'>■</span> nucleus (measured) &nbsp; "
-                        "<span style='color:#ff00c8'>■</span> cytoplasm (measured) &nbsp; "
+        legend = QLabel("<span style='color:#00b8d4'>■</span> nucleus, boundary 1 (measured) &nbsp; "
+                        "<span style='color:#ff00c8'>■</span> cytoplasm and cell outline, boundary 2 (measured) &nbsp; "
                         "<span style='color:#ff4646'>■</span> not measured &nbsp; "
                         "<span style='color:#c8a800'>■</span> cell-free area (Background_Mean) &nbsp; "
                         "<span style='color:#2828a0'>■</span> ignored (annotation / exclusion)")
@@ -523,15 +548,21 @@ class TranslocationPage(QWidget):
     def _sync_enabled(self, *_):
         per_cell = self.cb_cell.isChecked()
         self.method_note.setText(
-            "Per cell: nuclei found in the nuclear stain (size and circularity filters as ImageJ Analyze Particles), "
-            "target background removed with the rolling ball, then N/C = Nuc_corr / Cyto_corr for every cell."
+            "Per cell: nuclei found in the nuclear stain (boundary 1; size and circularity filters as ImageJ Analyze "
+            "Particles), target background removed with the rolling ball, cells outlined on the target (boundary 2), "
+            "then N/C = Nuc_corr / Cyto_corr for every cell, measured on the target only."
             if per_cell else
             "Paper method only: one N/C ratio per field, mean ± SD per condition (the paper used 5 fields and at "
             "least 500 cells per condition).")
         for w in self._cell_widgets:
             w.setEnabled(per_cell)
-        self.territory.setEnabled(per_cell and self.cyto.currentData() == "territory")
-        self.ring.setEnabled(per_cell and self.cyto.currentData() == "ring")
+        cyto = self.cyto.currentData()
+        self.territory.setEnabled(per_cell and cyto == "territory")
+        self.ring.setEnabled(per_cell and cyto == "ring")
+        self.cb_restrict.setEnabled(per_cell and cyto != "cell")
+        self.cell_thr.setEnabled(per_cell and cyto == "cell")
+        self.cell_thr_val.setEnabled(per_cell and cyto == "cell" and self.cell_thr.currentData() == "manual")
+        self.cell_smooth.setEnabled(per_cell and cyto == "cell")
         self.nuc_thr_val.setEnabled(self.nuc_thr.currentData() == "manual")
         self.tgt_thr_val.setEnabled(self.tgt_thr.currentData() == "manual")
         self.bg_val.setEnabled(per_cell and self.bg.currentData() == "manual")
@@ -569,6 +600,9 @@ class TranslocationPage(QWidget):
         s.territory_px = self.territory.value() or None
         s.restrict_to_cells = self.cb_restrict.isChecked()
         s.cell_detection_sigmas = self.cell_sig.value()
+        s.cell_threshold = self.cell_thr.currentData()
+        s.cell_threshold_value = self.cell_thr_val.value() if s.cell_threshold == "manual" else None
+        s.cell_smoothing_px = self.cell_smooth.value()
         s.responder_ratio = self.resp.value() or None
         s.conditions_from = self.cond_from.currentData()
         s.control_condition = self._control
@@ -616,6 +650,9 @@ class TranslocationPage(QWidget):
         self.territory.setValue(s.territory_px or 0)
         self.cb_restrict.setChecked(s.restrict_to_cells)
         self.cell_sig.setValue(s.cell_detection_sigmas)
+        _set_combo(self.cell_thr, s.cell_threshold or "noise")
+        self.cell_thr_val.setValue(s.cell_threshold_value or 0)
+        self.cell_smooth.setValue(s.cell_smoothing_px or 0)
         self.resp.setValue(s.responder_ratio or 0)
         source = self.cond_from.currentData()
         self.cond_from.blockSignals(True)
@@ -1001,12 +1038,21 @@ class TranslocationPage(QWidget):
                      f"{S['paper_cytoplasm_area_px']} px; thresholds: nuclear > {S['nuclear_threshold']:g}, "
                      f"target > {S['target_threshold']:g})")
         if res.method != "paper":
+            region = S.get("cytoplasm_region", "ring")
+            if region == "cell":
+                thr = f(S.get("cell_outline_threshold"), 2)
+                cyto = (f"cytoplasm from nucleus to cell outline (outline above {thr}, "
+                        f"median cell {f(S.get('median_cell_area_px'), 0)} px²)")
+            elif region == "territory":
+                cyto = f"cytoplasm: territory {f(S.get('territory_px'), 0)} px"
+            else:
+                cyto = f"cytoplasm: ring {f(S.get('ring_width_px'), 0)} px"
             parts.append(
                 f"Per cell: <b>{S.get('n_cells_analysed', 0)}</b> cells measured of {S.get('n_nuclei', 0)} nuclei; "
                 f"median N/C <b>{f(S.get('median_nc'))}</b> (IQR {f(S.get('q1_nc'))}–{f(S.get('q3_nc'))}), "
                 f"median C/N {f(S.get('median_cn'))}; Background_Mean {f(S.get('background_mean'), 2)} "
                 f"({S.get('background_source', '')}), rolling ball {S.get('rolling_ball_radius', 0):g} px, "
-                f"nucleus Ø {S['nucleus_diameter_px']:.1f} px, ring {f(S.get('ring_width_px'), 0)} px")
+                f"nucleus Ø {S['nucleus_diameter_px']:.1f} px, {cyto}")
             if S.get("excluded_cells"):
                 parts.append(f"Not measured: {html.escape(S['excluded_cells'])}")
         else:
@@ -1044,7 +1090,10 @@ class TranslocationPage(QWidget):
             text += f" (after rolling ball {L['target_corrected'][y, x]})"
         lab = L.get("nuclear_labels")
         if lab is not None:
+            outline = L.get("cell_labels")
             cid = int(lab[y, x]) or int(L["cytoplasm_labels"][y, x])
+            if not cid and outline is not None:
+                cid = int(outline[y, x])
             cell = self._cell_index.get(cid) if cid else None
             if cell:
                 text += f"   cell {cid}: Nuc_corr {cell['nuc_corr']:.1f}, Cyto_corr {cell['cyto_corr']:.1f}"

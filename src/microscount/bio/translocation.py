@@ -26,10 +26,15 @@ Per-cell lab protocol (``method="per_cell"``, the default; adds to the paper met
        with ImageJ's traced perimeter so that the values match ImageJ;
     2. target (green): *Process > Subtract Background*, rolling ball radius 50 px
        (30-50 px in the protocol), ImageJ's algorithm reproduced exactly;
-    3. mean grey values of the corrected target in each nucleus (Nuc_Mean), in a
-       perinuclear cytoplasmic ring (Cyto_Mean) and in the cell-free area of the field
-       (Background_Mean); the mean grey value of the nuclear stain is reported too;
-    4. Nuc_corr = Nuc_Mean - Background_Mean, Cyto_corr = Cyto_Mean - Background_Mean,
+    3. boundaries: the nuclei of step 1 are boundary 1; the outline of every cell on the
+       target channel is boundary 2 (``cytoplasm="cell"``, see ``outline_cells``). From here
+       on only the target is measured: the nucleus is the area inside boundary 1, the
+       cytoplasm the area from boundary 1 to boundary 2. A perinuclear ring or a territory
+       around each nucleus can be used as the cytoplasm instead;
+    4. mean grey values of the corrected target in each nucleus (Nuc_Mean), in its
+       cytoplasm (Cyto_Mean) and in the cell-free area of the field (Background_Mean);
+       the mean grey value of the nuclear stain is reported too;
+    5. Nuc_corr = Nuc_Mean - Background_Mean, Cyto_corr = Cyto_Mean - Background_Mean,
        N/C = Nuc_corr / Cyto_corr, and its inverse C/N = Cyto_corr / Nuc_corr.
 """
 
@@ -88,12 +93,17 @@ class TranslocationSettings:
     rolling_ball_radius: float = 50.0  # Subtract Background radius in px; 0 = off
     background: str = "auto"  # Background_Mean: "auto" (cell-free area) | "manual" | "none"
     background_value: float = 0.0
-    cytoplasm: str = "ring"  # "ring" | "territory"
-    ring_gap_px: float = 0.0
+    # cytoplasm: "cell" = boundary 1 (nucleus) to boundary 2 (the cell outlined on the target),
+    # "ring" = a ring around the nucleus, "territory" = all cell pixels within reach of the nucleus
+    cytoplasm: str = "cell"
+    ring_gap_px: float = 0.0  # gap left between the nucleus and its cytoplasm
     ring_width_px: float | None = None  # None = 0.3 x nucleus diameter
     territory_px: float | None = None  # None = 1.0 x nucleus diameter
-    restrict_to_cells: bool = True  # drop ring pixels at background level (off the cell)
-    cell_detection_sigmas: float = 3.0
+    restrict_to_cells: bool = True  # ring/territory: drop pixels at background level (off the cell)
+    cell_detection_sigmas: float = 3.0  # on a cell: this many noise SDs above the cell-free background
+    cell_threshold: str = "noise"  # cell outlines: "noise" (cell_detection_sigmas) or a threshold method
+    cell_threshold_value: float | None = None  # for cell_threshold = "manual"
+    cell_smoothing_px: float = 2.0  # Gaussian sigma before the target is thresholded for cell outlines
     nucleus_erode_px: int = 0
     min_cytoplasm_pixels: int = 15
     exclude_saturated: bool = False
@@ -241,7 +251,12 @@ def valid_mask(shape, images: list[LoadedImage], s: TranslocationSettings) -> np
 
 
 def estimate_background(img_f: np.ndarray, region: np.ndarray) -> tuple[float, float]:
-    """Mode and left-side spread (sigma) of the intensity histogram in ``region``."""
+    """Mode and left-side spread (sigma) of the intensity histogram in ``region``.
+
+    The background is the darkest population: when cells cover most of the region (confluent
+    fields), a darker peak that holds a clear population of its own (at least a tenth of the
+    height of the main peak, with a dip between them) is taken instead of the main peak.
+    """
     vals = img_f[region].astype(np.float64)
     if vals.size == 0:
         return 0.0, 1.0
@@ -253,6 +268,11 @@ def estimate_background(img_f: np.ndarray, region: np.ndarray) -> tuple[float, f
     h, edges = np.histogram(vals, bins=edges)
     hs = ndi.gaussian_filter1d(h.astype(np.float64), sigma=max(1.0, len(h) / 256.0))
     k = int(np.argmax(hs))
+    up = np.r_[True, hs[1:] > hs[:-1]] & np.r_[hs[:-1] >= hs[1:], True]
+    for p in np.flatnonzero(up[:k]):
+        if hs[p] >= 0.1 * hs[k] and hs[p:k].min() < 0.7 * hs[p]:
+            k = int(p)
+            break
     mode = 0.5 * (edges[k] + edges[k + 1])
     left = vals[vals <= mode]
     bw = edges[1] - edges[0]
@@ -395,6 +415,75 @@ def segment_nuclei(
     labels, _, _ = relabel_sequential(labels.astype(np.int32))
     info.update(diameter=float(diameter), removed_small=int(small.size), n_nuclei=int(labels.max()), splits=n_split)
     return labels.astype(np.int32), info
+
+
+def _fill_small_holes(mask: np.ndarray, max_area: float) -> np.ndarray:
+    """Fill holes of ``mask`` smaller than ``max_area`` px (holes open to the image edge stay)."""
+    lab, n = ndi.label(~mask)
+    if n == 0:
+        return mask
+    area = np.bincount(lab.ravel())
+    fill = area < max_area
+    fill[np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))] = False
+    fill[0] = False
+    return mask | fill[lab]
+
+
+def half_maximum_edge(target: np.ndarray, foreground: np.ndarray, background: float, width: float,
+                      avoid: np.ndarray | None = None) -> np.ndarray:
+    """Move the outer edge of ``foreground`` in to the half maximum of the edge.
+
+    Where a smoothed image first rises above the background noise lies outside the edge of a
+    bright object by the blur of the optics and of the smoothing. Within ``width`` px of that
+    contour, a pixel stays only if it is at least half way between ``background`` and the
+    object just inside (the mean of ``target`` 1-2 ``width`` deep, away from ``avoid``) - the
+    edge of a blurred object at its half maximum, as a full width at half maximum. Dim edges,
+    such as thin lamellae close to the background, barely move. Edges between touching objects
+    (inside ``foreground``) are not changed.
+    """
+    g = target.astype(np.float32)
+    depth = ndi.distance_transform_edt(foreground)
+    inner = foreground & (depth > width) & (depth <= 2 * width)
+    if avoid is not None:
+        inner &= ~_dilate(avoid, width)
+    weight = ndi.gaussian_filter(inner.astype(np.float32), 2 * width)
+    level = ndi.gaussian_filter(np.where(inner, g, 0).astype(np.float32), 2 * width) / np.maximum(weight, 1e-6)
+    keep = (depth > width) | (weight < 1e-3) | (g >= background + 0.5 * (level - background))
+    return foreground & keep
+
+
+def outline_cells(target: np.ndarray, foreground: np.ndarray, seeds: np.ndarray, diameter: float,
+                  valid: np.ndarray | None = None, background: float | None = None,
+                  edge_width: float = 0.0) -> np.ndarray:
+    """Boundary 2: the outline of every cell on the target channel, one cell per seed nucleus.
+
+    ``foreground`` (the cell area: the smoothed ``target`` above the cell threshold) is tidied -
+    holes smaller than a tenth of a typical nucleus are filled (larger ones are gaps between
+    cells) and spurs thinner than about a seventh of a nucleus removed. With ``edge_width`` > 0
+    its outer edge is moved in to the half maximum of the edge (``half_maximum_edge``, relative
+    to ``background``). Every nucleus in ``seeds`` then grows into the cell area around it,
+    brighter and nearer pixels first (a compact watershed seeded with the nuclei, as
+    CellProfiler's secondary objects), so that neighbouring cells meet along the dimmest line
+    between them, or half way where the target shows none. Cell area that no nucleus reaches
+    (debris, cells whose nucleus is outside the field) belongs to no cell. Returns a label
+    image with each cell numbered as its nucleus.
+    """
+    from skimage.segmentation import watershed
+
+    fg = _fill_small_holes(foreground, 0.1 * math.pi * (diameter / 2.0) ** 2)
+    fg = ndi.binary_opening(fg, structure=_disk(max(1, int(round(0.075 * diameter)))))
+    if valid is not None:
+        fg &= valid
+    b = float(background) if background is not None else 0.0
+    if edge_width > 0 and background is not None:
+        fg = half_maximum_edge(target, fg, b, edge_width, avoid=seeds > 0)
+    mask = fg | (seeds > 0)
+    g = target.astype(np.float64)
+    # intensities in units of the typical cell level above the background, so that the pull
+    # towards the nearer nucleus (half the cell level per 100 px) does not depend on the exposure
+    scale = float(np.median(g[fg])) - b if fg.any() else 0.0
+    scale = scale if scale > 0 else max(float(np.ptp(g)), 1e-6)
+    return watershed(-(g - b) / scale, markers=seeds, mask=mask, compactness=0.005).astype(np.int32)
 
 
 # ---------------------------------------------------------------------- analysis
@@ -628,9 +717,34 @@ def _per_cell(labels, nuclear_mask, n_raw, t_raw, valid, saturated, d, s):
     bg_mode, bg_sigma = estimate_background(g_f, outside if outside.any() else valid)
     cell_thr = bg_mode + s.cell_detection_sigmas * bg_sigma
     on_cells = (g_f > cell_thr) & valid
+    cellish = _remove_small(on_cells, max(9, int(0.1 * a_ref))) | nuclear_any
+
+    # boundary 2: every cell outlined on the target, one per nucleus; specks of debris own no cell
+    whole = s.cytoplasm == "cell"
+    cells_lab = None
+    outline_thr = math.nan
+    seed_ok = np.ones(n + 1, bool)
+    if whole:
+        sc = float(s.cell_smoothing_px or 0)
+        g_s = ndi.gaussian_filter(corrected.astype(np.float32), sc) if sc > 0 else corrected.astype(np.float32)
+        m_s, sd_s = estimate_background(g_s, outside if outside.any() else valid)
+        noise = s.cell_threshold in (None, "", "noise")
+        if noise:
+            outline_thr = m_s + s.cell_detection_sigmas * sd_s
+        else:
+            outline_thr = compute_threshold(g_s, s.cell_threshold, valid, s.cell_threshold_value,
+                                            s.legacy_inclusive_threshold).value
+        cell_area = (g_s > outline_thr) & valid
+        seed_ok = np.bincount(labels.ravel(), minlength=n + 1) >= max(2.0, 0.1 * a_ref)
+        seed_ok[0] = False
+        # the noise-level contour includes the blur halo (optics ~1 px plus the smoothing): the
+        # outer edge goes to its half maximum; an ImageJ or manual threshold is kept as drawn
+        halo = 2.5 * math.hypot(1.0, sc) if noise else 0.0
+        cells_lab = outline_cells(g_s, cell_area, np.where(seed_ok[labels], labels, 0), d, valid, m_s, halo)
+        cellish |= _remove_small(cell_area, max(9, int(0.1 * a_ref))) | (cells_lab > 0)
+        del g_s
 
     # Background_Mean: mean grey value of the corrected target in the cell-free area
-    cellish = _remove_small(on_cells, max(9, int(0.1 * a_ref))) | nuclear_any
     free = valid & ~_dilate(cellish, max(2, int(round(0.15 * d))))
     n_free = int(free.sum())
     if s.background == "none":
@@ -645,25 +759,31 @@ def _per_cell(labels, nuclear_mask, n_raw, t_raw, valid, saturated, d, s):
         warns.append("almost no cell-free area in this field: Background_Mean was taken as the most common "
                      "target value outside nuclei; consider a manual value")
 
-    # cytoplasm: a ring around each nucleus (or its territory), split between neighbours
+    # cytoplasm: from boundary 1 to boundary 2 (the whole cell minus every nucleus), or a ring
+    # around each nucleus (or its territory) split between neighbours
     gap = float(s.ring_gap_px or 0)
-    if s.cytoplasm == "territory":
-        reach = float(s.territory_px) if s.territory_px else float(d)
-    else:
-        reach = float(s.ring_width_px) if s.ring_width_px else max(2.0, float(round(0.3 * d)))
-    if n:
-        dist_bg, (iy, ix) = ndi.distance_transform_edt(labels == 0, return_indices=True)
-        nearest = labels[iy, ix]
-        inner = np.where(dist_bg <= gap, nearest, 0) if gap > 0 else labels
-        outer = np.where(dist_bg <= gap + reach, nearest, 0)
-        del iy, ix, dist_bg
-    else:
-        inner = outer = labels
     blocked = _dilate(nuclear_any, gap)
-    cyto = np.where((inner == 0) & ~blocked & valid, outer, 0)
-    cyto_before = cyto.copy()
-    if s.restrict_to_cells:
-        cyto = np.where(on_cells, cyto, 0)
+    reach = math.nan
+    if whole:
+        cyto = np.where((cells_lab > 0) & ~blocked & valid, cells_lab, 0)
+        cyto_before = cyto
+    else:
+        if s.cytoplasm == "territory":
+            reach = float(s.territory_px) if s.territory_px else float(d)
+        else:
+            reach = float(s.ring_width_px) if s.ring_width_px else max(2.0, float(round(0.3 * d)))
+        if n:
+            dist_bg, (iy, ix) = ndi.distance_transform_edt(labels == 0, return_indices=True)
+            nearest = labels[iy, ix]
+            inner = np.where(dist_bg <= gap, nearest, 0) if gap > 0 else labels
+            outer = np.where(dist_bg <= gap + reach, nearest, 0)
+            del iy, ix, dist_bg
+        else:
+            inner = outer = labels
+        cyto = np.where((inner == 0) & ~blocked & valid, outer, 0)
+        cyto_before = cyto.copy()
+        if s.restrict_to_cells:
+            cyto = np.where(on_cells, cyto, 0)
 
     nuc_meas = _erode_labels(labels, s.nucleus_erode_px)
     counts_er = np.bincount(nuc_meas.ravel(), minlength=n + 1)
@@ -691,8 +811,16 @@ def _per_cell(labels, nuclear_mask, n_raw, t_raw, valid, saturated, d, s):
     if (~valid).any():
         near_invalid = ndi.binary_dilation(~valid, iterations=2)
         touches_invalid = np.bincount(labels[near_invalid].ravel(), minlength=n + 1) > 0
+        if whole:
+            touches_invalid |= np.bincount(cells_lab[near_invalid].ravel(), minlength=n + 1) > 0
     else:
         touches_invalid = np.zeros(n + 1, bool)
+    cell_border = np.zeros(n + 1, bool)
+    cell_px = np.zeros(n + 1)
+    if whole:
+        cell_border[np.concatenate([cells_lab[0], cells_lab[-1], cells_lab[:, 0], cells_lab[:, -1]])] = True
+        cell_border[0] = False
+        cell_px = np.bincount(cells_lab.ravel(), minlength=n + 1)
 
     shapes = particle_shape(labels, n)  # ImageJ area, traced perimeter, circularity
     want = ("label", "centroid", "bbox") + (("solidity",) if s.min_solidity else ())
@@ -725,8 +853,12 @@ def _per_cell(labels, nuclear_mask, n_raw, t_raw, valid, saturated, d, s):
             reason = "size outside the particle filter"
         elif not s.circularity_min <= circ <= s.circularity_max:
             reason = "circularity outside the particle filter"
+        elif not seed_ok[lab]:
+            reason = "too small for a nucleus (no cell outline)"
         elif s.exclude_border_cells and border:
             reason = "touches image edge"
+        elif s.exclude_border_cells and cell_border[lab]:
+            reason = "cell touches image edge"
         elif touches_invalid[lab]:
             reason = "touches excluded region"
         elif s.max_area_fraction and area > s.max_area_fraction * a_ref:
@@ -764,9 +896,13 @@ def _per_cell(labels, nuclear_mask, n_raw, t_raw, valid, saturated, d, s):
             "saturated_fraction_nucleus": float(nsf),
             "saturated_fraction_cytoplasm": float(csf),
         }
+        if whole:
+            row["cell_area_px"] = int(cell_px[lab])
         if px:
             row["nucleus_area_um2"] = area * px * px
             row["nucleus_perimeter_um"] = float(sh["perimeter"]) * px
+            if whole:
+                row["cell_area_um2"] = float(cell_px[lab]) * px * px
         cells.append(row)
 
     inc = [c for c in cells if c["included"]]
@@ -783,7 +919,10 @@ def _per_cell(labels, nuclear_mask, n_raw, t_raw, valid, saturated, d, s):
         "background_area_px": n_free,
         "rolling_ball_radius": radius,
         "cell_threshold": float(cell_thr),
-        "ring_width_px": float(reach) if s.cytoplasm != "territory" else math.nan,
+        "cytoplasm_region": s.cytoplasm,
+        "cell_outline_threshold": float(outline_thr),
+        "median_cell_area_px": float(np.median([c["cell_area_px"] for c in inc])) if whole and inc else math.nan,
+        "ring_width_px": float(reach) if s.cytoplasm == "ring" else math.nan,
         "territory_px": float(reach) if s.cytoplasm == "territory" else math.nan,
         "ring_gap_px": gap,
     }
@@ -805,6 +944,14 @@ def _per_cell(labels, nuclear_mask, n_raw, t_raw, valid, saturated, d, s):
         if s.background == "auto" and bgm > 0.5 * cyto_level:
             warns.append("Background_Mean is more than half the cytoplasmic level: the field may be confluent; "
                          "consider a manual background value")
+    if whole and n:
+        seeded = [c for c in cells if seed_ok[c["cell"]]]
+        c_med = float(np.median([c["cytoplasm_pixels"] for c in seeded])) if seeded else 0.0
+        n_med = float(np.median([c["nucleus_area_px"] for c in seeded])) if seeded else 0.0
+        if c_med < 0.5 * n_med:
+            warns.append(f"the cell outlines hardly reach beyond the nuclei (median cytoplasm {c_med:.0f} px, "
+                         f"nucleus {n_med:.0f} px): the cytoplasm is close to the background, or the target has "
+                         "not been background-subtracted; check the overlay or the cell outline threshold")
     if not s.exclude_saturated and inc:
         sat_cells = sum(1 for c in inc if max(c["saturated_fraction_nucleus"], c["saturated_fraction_cytoplasm"])
                         > s.max_saturated_fraction)
@@ -817,7 +964,7 @@ def _per_cell(labels, nuclear_mask, n_raw, t_raw, valid, saturated, d, s):
             reasons[c["exclusion_reason"]] = reasons.get(c["exclusion_reason"], 0) + 1
     summ["excluded_cells"] = "; ".join(f"{k}: {v}" for k, v in sorted(reasons.items()))
     layers = {"nuclear_labels": labels, "cytoplasm_labels": cyto, "cell_status": status,
-              "target_corrected": corrected, "background_region": free}
+              "target_corrected": corrected, "background_region": free, "cell_labels": cells_lab}
     return cells, layers, summ, warns
 
 

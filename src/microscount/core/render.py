@@ -60,7 +60,9 @@ def translocation_overlay(layers: dict, base: str = "target", show_cytoplasm: bo
     """Target (or nuclear/composite) image with segmentation drawn on top.
 
     ``base``: "target", "target_corrected" (after the rolling ball; per-cell only),
-    "nuclear" or "composite".
+    "nuclear" or "composite". Nuclei (boundary 1) are outlined in cyan, cells (boundary 2,
+    whole-cell cytoplasm) in magenta, with the measured cytoplasm tinted magenta; cells that
+    are not measured are outlined in red.
     """
     valid = layers.get("valid")
     if base == "nuclear":
@@ -89,9 +91,15 @@ def translocation_overlay(layers: dict, base: str = "target", show_cytoplasm: bo
     if status is not None:
         ok = np.array([s == "ok" for s in status], bool)
     ok[0] = False
+    cells = layers.get("cell_labels")
     if show_cytoplasm:
         cyto = layers["cytoplasm_labels"]
-        _blend(rgb, ok[cyto], MAGENTA, 0.35)
+        _blend(rgb, ok[cyto], MAGENTA, 0.35 if cells is None else 0.22)
+        if cells is not None:  # boundary 2: the cell outlines
+            edge = _outline(cells)
+            rgb[edge & ok[cells]] = MAGENTA
+            if show_excluded:
+                rgb[edge & ~ok[cells] & (cells > 0)] = RED
     if show_nuclei:
         edge = _outline(labels)
         good = edge & ok[labels]

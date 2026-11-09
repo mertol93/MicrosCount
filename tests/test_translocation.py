@@ -57,11 +57,75 @@ def test_lab_protocol_values_per_cell(tmp_path):
 def test_rolling_ball_is_applied_to_the_target(tmp_path):
     nuc, tgt, _ = _pair(tmp_path, ratio=2.0, seed=13)
     tgt.data = tgt.data.astype(np.uint16) + np.linspace(0, 400, tgt.data.shape[-1], dtype=np.uint16)[None, None, :]
-    on = analyse_field(nuc, tgt, TranslocationSettings()).summary["median_nc"]
-    off = analyse_field(nuc, tgt, TranslocationSettings(rolling_ball_radius=0, background="none",
-                                                        restrict_to_cells=False)).summary["median_nc"]
+    tgt.saturation_value = None
+    assert analyse_field(nuc, tgt, TranslocationSettings()).summary["median_nc"] == pytest.approx(2.0, rel=0.15)
+    ring = dict(cytoplasm="ring", restrict_to_cells=False)
+    on = analyse_field(nuc, tgt, TranslocationSettings(**ring)).summary["median_nc"]
+    off = analyse_field(nuc, tgt, TranslocationSettings(rolling_ball_radius=0, background="none", **ring))
     assert on == pytest.approx(2.0, rel=0.15)  # the ramp is removed
-    assert off < 0.8 * on  # without it the offset compresses the ratio
+    assert off.summary["median_nc"] < 0.8 * on  # without it the offset compresses the ratio
+    # nor can the cells be outlined: the bright end of the ramp counts as cell
+    off = analyse_field(nuc, tgt, TranslocationSettings(rolling_ball_radius=0, background="none"))
+    assert off.summary["median_nc"] < 0.8 * 2.0
+
+
+def _jaccard(a, b):
+    return (a & b).sum() / max(1, (a | b).sum())
+
+
+@pytest.mark.parametrize("spacing", [64, 46])  # separate cells, and cells that touch
+def test_whole_cell_boundaries(tmp_path, spacing):
+    """Boundary 1 = the nucleus in the nuclear stain, boundary 2 = the cell outlined on the target;
+    the cytoplasm is everything between them, and only the target is measured."""
+    nuc, tgt, truth = _pair(tmp_path, ratio=2.5, seed=21, spacing=spacing, cell_radius=26.0)
+    r = analyse_field(nuc, tgt, TranslocationSettings())
+    L, S = r.layers, r.summary
+    assert S["cytoplasm_region"] == "cell" and S["median_nc"] == pytest.approx(2.5, rel=0.12)
+    nuclei, cells, cyto = L["nuclear_labels"], L["cell_labels"], L["cytoplasm_labels"]
+    assert np.array_equal(cells[nuclei > 0], nuclei[nuclei > 0])  # each cell holds its own nucleus
+    assert not (cyto & (nuclei > 0)).any() and np.array_equal(cyto > 0, (cells > 0) & (nuclei == 0))
+    # every true cell is found as one cell, with its true outline
+    t_cells, t_nuc = truth["cells"], truth["nuclei"]
+    scores = []
+    for c in r.cells:
+        if not c["included"]:
+            continue
+        k = np.bincount(t_nuc[nuclei == c["cell"]]).argmax()
+        assert k > 0
+        scores.append(_jaccard(cells == c["cell"], t_cells == k))
+        assert c["cell_area_px"] == int((cells == c["cell"]).sum())
+        assert c["cytoplasm_pixels"] == int((cyto == c["cell"]).sum())
+    assert len(scores) >= 0.6 * truth["n_cells"] and np.median(scores) > 0.85 and min(scores) > 0.6
+    # cells cut by the image edge are not measured
+    edge = {int(v) for v in np.concatenate([cells[0], cells[-1], cells[:, 0], cells[:, -1]]) if v}
+    assert edge and all(not c["included"] for c in r.cells if c["cell"] in edge)
+    assert any(c["exclusion_reason"] == "cell touches image edge" for c in r.cells)
+
+
+def test_whole_cell_options(tmp_path):
+    nuc, tgt, truth = _pair(tmp_path, ratio=2.0, seed=22)
+    y, x = (int(round(v)) for v in ndi.center_of_mass(truth["nuclei"] == 20))
+    x += 17  # a speck of DAPI-positive debris in the cytoplasm of cell 20: no cell of its own
+    nuc.data = nuc.data.copy()
+    nuc.data[0, y - 1:y + 2, x - 1:x + 2] = 160
+    r = analyse_field(nuc, tgt, TranslocationSettings())
+    speck = int(r.layers["nuclear_labels"][y, x])
+    host = int(r.layers["nuclear_labels"][truth["nuclei"] == 20].max())
+    assert speck and speck != host and r.layers["cell_labels"][y, x] == host
+    assert next(c for c in r.cells if c["cell"] == speck)["exclusion_reason"] == \
+        "too small for a nucleus (no cell outline)"
+    # an ImageJ or manual threshold draws the outline where the threshold lies
+    lo = analyse_field(nuc, tgt, TranslocationSettings(cell_threshold="manual", cell_threshold_value=8))
+    hi = analyse_field(nuc, tgt, TranslocationSettings(cell_threshold="manual", cell_threshold_value=25))
+    assert lo.summary["cell_outline_threshold"] == 8 and hi.summary["median_cell_area_px"] < \
+        lo.summary["median_cell_area_px"]
+    otsu = analyse_field(nuc, tgt, TranslocationSettings(cell_threshold="otsu"))
+    assert otsu.summary["median_nc"] == pytest.approx(2.0, rel=0.15)
+    # the ring and the territory are still there
+    for region in ("ring", "territory"):
+        res = analyse_field(nuc, tgt, TranslocationSettings(cytoplasm=region))
+        assert res.layers["cell_labels"] is None and res.summary["median_nc"] == pytest.approx(2.0, rel=0.15)
+    assert "cell_area_px" not in res.cells[0]
 
 
 def test_paper_method_is_compressed_towards_one(tmp_path):

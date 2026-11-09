@@ -64,6 +64,8 @@ def _fmt(v) -> str:
 
 
 def _translocation_args(t: argparse.ArgumentParser) -> None:
+    from .core.thresholds import METHOD_LABELS
+
     t.add_argument("inputs", nargs="*", help="image files or folders (TIFF/PNG/JPEG)")
     t.add_argument("--method", choices=["per_cell", "paper"], default=None,
                    help="per_cell (default) = the paper ratio per field plus the per-cell lab protocol; "
@@ -80,9 +82,17 @@ def _translocation_args(t: argparse.ArgumentParser) -> None:
                    help="Subtract Background radius for the target channel in px (default 50; 0 = off)")
     g.add_argument("--background", metavar="auto|none|VALUE",
                    help="Background_Mean: auto = mean of the cell-free area (default), none, or a number")
+    g.add_argument("--cytoplasm", choices=["cell", "ring", "territory"],
+                   help="cell (default) = from the nucleus (boundary 1) to the cell outlined on the target channel "
+                        "(boundary 2); ring = a ring around the nucleus; territory = cell pixels near the nucleus")
+    g.add_argument("--cell-threshold", metavar="auto|METHOD|VALUE",
+                   help="cell outlines: auto = above the background noise, edge at half maximum (default), an "
+                        "automatic threshold method (" + ", ".join(k for k in METHOD_LABELS if k != "manual") + ") "
+                        "or a grey value of the background-subtracted target")
     g.add_argument("--ring-width", type=float, metavar="PX", help="width of the cytoplasmic ring (default 0.3 x "
                    "nucleus diameter)")
-    g.add_argument("--keep-edge-cells", action="store_true", help="measure nuclei touching the image edge too")
+    g.add_argument("--keep-edge-cells", action="store_true",
+                   help="measure cells whose nucleus or outline touches the image edge too")
     t.add_argument("--out", help="output folder")
     t.add_argument("--no-subfolders", action="store_true", help="only the images directly inside the given folders")
     e = t.add_argument_group("experiment")
@@ -192,6 +202,22 @@ def cmd_translocation(a) -> int:
                 s.background, s.background_value = "manual", float(b)
             except ValueError:
                 print("--background: auto, none or a number", file=sys.stderr)
+                return 2
+    if a.cytoplasm:
+        s.cytoplasm = a.cytoplasm
+    if a.cell_threshold:
+        from .core.thresholds import METHOD_LABELS
+
+        c = a.cell_threshold.strip().lower()
+        if c == "auto":
+            s.cell_threshold = "noise"
+        elif c in METHOD_LABELS and c != "manual":
+            s.cell_threshold = c
+        else:
+            try:
+                s.cell_threshold, s.cell_threshold_value = "manual", float(c)
+            except ValueError:
+                print("--cell-threshold: auto, a threshold method or a number", file=sys.stderr)
                 return 2
     if a.ring_width:
         s.ring_width_px = a.ring_width

@@ -47,7 +47,8 @@ FIELD_FIRST = [
     # per-cell lab protocol
     "n_cells_analysed", "median_nc", "q1_nc", "q3_nc", "mean_nc", "sd_nc", "median_cn", "mean_cn",
     "mean_nuc_corr", "mean_cyto_corr", "background_mean", "background_source", "rolling_ball_radius",
-    "responder_fraction", "n_particles", "n_nuclei", "excluded_cells", "nucleus_diameter_px",
+    "responder_fraction", "n_particles", "n_nuclei", "excluded_cells", "nucleus_diameter_px", "cytoplasm_region",
+    "cell_outline_threshold", "median_cell_area_px",
     # paper method
     "paper_ratio", "paper_ok", "paper_nuclear_mean", "paper_cytoplasm_mean", "paper_nuclear_area_px",
     "paper_cytoplasm_area_px", "nuclear_threshold", "target_threshold", "threshold_method", "nuclei_count",
@@ -56,7 +57,8 @@ FIELD_FIRST = [
 CELL_FIRST = [
     "field", "condition", "repetition", "cell", "included", "exclusion_reason", "nc_ratio", "cn_ratio", "nuc_mean",
     "cyto_mean", "background_mean", "nuc_corr", "cyto_corr", "log2_nc", "dapi_mean", "nucleus_area_px",
-    "nucleus_area_um2", "nucleus_perimeter_px", "circularity", "x", "y",
+    "nucleus_area_um2", "nucleus_perimeter_px", "circularity", "nuclear_pixels", "cytoplasm_pixels", "cell_area_px",
+    "cell_area_um2", "x", "y",
 ]
 COND_FIRST = [
     "repetition", "condition", "n_fields", "n_cells", "field_median_nc_mean", "field_median_nc_sd",
@@ -253,7 +255,7 @@ def histogram_figure(path: Path, per_condition: dict[str, dict]) -> Path | None:
 
 
 def readme_text(exp: ExperimentSummary, design: ExperimentDesign, n_fields: int, n_warned: int,
-                source: str = "") -> str:
+                source: str = "", cytoplasm: str = "") -> str:
     reps = exp.repetitions
     per_cell = exp.measure.startswith("median")
     rule = next((r.get("responder_rule") for r in exp.conditions if r.get("responder_rule")), "")
@@ -278,11 +280,16 @@ def readme_text(exp: ExperimentSummary, design: ExperimentDesign, n_fields: int,
         "DEFINITIONS",
     ]
     if per_cell:
-        lines += [
-            "N/C per cell = Nuc_corr / Cyto_corr, Nuc_corr = Nuc_Mean − Background_Mean, Cyto_corr = Cyto_Mean − "
-            "Background_Mean (target channel after the rolling ball; Background_Mean from the cell-free area).",
-            "Field value = median N/C of the cells measured in the field.",
-        ]
+        region = {"cell": "Cyto_Mean between boundary 1 (the nucleus, from the nuclear stain) and boundary 2 (the "
+                          "cell outlined on the target channel)",
+                  "ring": "Cyto_Mean in a ring around the nucleus",
+                  "territory": "Cyto_Mean in the cell pixels within reach of the nucleus"}.get(cytoplasm, "")
+        lines.append("N/C per cell = Nuc_corr / Cyto_corr, Nuc_corr = Nuc_Mean − Background_Mean, Cyto_corr = "
+                     "Cyto_Mean − Background_Mean (target channel after the rolling ball; Background_Mean from the "
+                     "cell-free area).")
+        if region:
+            lines.append(f"Nuc_Mean inside the nucleus; {region}; both measured on the target channel only.")
+        lines.append("Field value = median N/C of the cells measured in the field.")
     else:
         lines.append("Field value = paper-method N/C (Noursadeghi et al. 2008): mean target intensity in the nuclear "
                      "mask / in the target mask minus the nuclear mask.")
@@ -327,7 +334,8 @@ def write_experiment(out: Path, exp: ExperimentSummary, field_rows: list[dict], 
     if cell_rows:
         files["per_cell"] = write_csv(out / "per_cell.csv", cell_rows, CELL_FIRST)
     n_warned = sum(1 for r in field_rows if str(r.get("warnings") or "").strip())
-    readme = readme_text(exp, design, len(field_rows), n_warned, source)
+    cytoplasm = next((str(r["cytoplasm_region"]) for r in field_rows if r.get("cytoplasm_region")), "")
+    readme = readme_text(exp, design, len(field_rows), n_warned, source, cytoplasm)
     cite = citation_text("translocation")
     sheets = {"Read me": [], "Summary": exp.overall, "Comparisons": exp.comparisons, "Conditions": exp.conditions,
               "Fields": field_rows}

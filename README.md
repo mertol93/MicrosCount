@@ -54,9 +54,9 @@ Python users can instead run `pip install git+https://github.com/mertol93/micros
    Right-click a row to swap or change a pairing.
 2. **Check the conditions and repetitions.** They are read from the names (see [Conditions and repetitions](#conditions-and-repetitions)) and can be edited in the table or with *Set condition…* / *Set repetition…*.
 3. **Choose the method.** The paper method (Noursadeghi et al. 2008) is always computed. *Also measure every cell* (on by default) adds the per-cell lab protocol.
-4. **Check the settings.** The defaults are the lab protocol: nuclei filtered at size 0–Infinity px² and circularity 0.20–1.00, nuclei on the image edge excluded, rolling-ball background subtraction with a 50 px radius, Background_Mean from the cell-free area. *Pixel size → From scale bar…* reads a burned-in scale bar.
+4. **Check the settings.** The defaults are the lab protocol: nuclei filtered at size 0–Infinity px² and circularity 0.20–1.00, rolling-ball background subtraction with a 50 px radius, the cytoplasm from the nucleus (boundary 1, nuclear stain) to the cell outline (boundary 2, target channel), cells on the image edge excluded, Background_Mean from the cell-free area. *Cytoplasm* can be set to a perinuclear ring instead. *Pixel size → From scale bar…* reads a burned-in scale bar.
 5. **Describe the experiment** (optional). Choose the **control condition**, add **comparisons** (e.g. drug vs vehicle at each time point), set the order of the conditions and, if needed, a different reference for a condition's fold change. Without comparisons, every condition is compared with the control.
-6. **Preview** a field. Measured nuclei are outlined in cyan, their cytoplasm is shaded magenta, the cell-free area used for Background_Mean is tinted yellow, and nuclei that are not measured are outlined in red. Hover over a cell to see its values.
+6. **Preview** a field. Measured nuclei (boundary 1) are outlined in cyan, cells (boundary 2) in magenta with their cytoplasm shaded magenta, the cell-free area used for Background_Mean is tinted yellow, and cells that are not measured are outlined in red. Hover over a cell to see its values.
 7. **Analyse all fields.** Results open in the *Results* tab and are saved to a new folder next to your images.
 
 Repetitions analysed at different times can be put together afterwards with **Combine saved results…**: choose the folder that holds their result folders. A result folder of one repetition becomes one repetition, named after the folder; conditions of one repetition analysed separately are joined by their repetition labels.
@@ -193,13 +193,16 @@ The paper's cytoplasmic ROI is thresholded on the channel being measured, and no
 
 The laboratory's ImageJ protocol, automated for every cell:
 
-- **Nuclei:** the nuclear stain is smoothed (Gaussian, σ = 2 px), thresholded with the same automatic threshold, and holes are filled. Objects with more than 1.2 × the area of a typical nucleus are split along the valleys of their distance map (watershed). Particles are 8-connected and filtered as by *Analyze Particles*: size 0–Infinity px², circularity 4π·area/perimeter² between 0.20 and 1.00 with ImageJ's traced perimeter, and nuclei touching the image edge or a burned-in annotation are excluded.
-- **Target:** *Process ▸ Subtract Background*, rolling ball radius 50 px, ImageJ's algorithm reproduced exactly.
-- **Regions:** the nucleus; a cytoplasmic ring 0.3 × the nucleus diameter wide around it, where pixels closer to a neighbouring nucleus go to that nucleus and only pixels on a cell (target above the background noise) count; and the cell-free area of the field.
-- **Values:** Nuc_Mean, Cyto_Mean and Background_Mean of the background-subtracted target; Nuc_corr = Nuc_Mean − Background_Mean, Cyto_corr = Cyto_Mean − Background_Mean, N/C = Nuc_corr ÷ Cyto_corr and C/N = Cyto_corr ÷ Nuc_corr.
-- A cell is not measured, with the reason recorded, if it fails the size or circularity filter, touches the image edge or an excluded region, has fewer than 15 cytoplasm pixels, or has Cyto_corr ≤ 0. Optional: exclude saturated cells, clumps or irregular shapes.
+- **Boundary 1, nuclei:** the nuclear stain is smoothed (Gaussian, σ = 2 px), thresholded with the same automatic threshold, and holes are filled. Objects with more than 1.2 × the area of a typical nucleus are split along the valleys of their distance map (watershed). Particles are 8-connected and filtered as by *Analyze Particles*: size 0–Infinity px², circularity 4π·area/perimeter² between 0.20 and 1.00 with ImageJ's traced perimeter, and nuclei touching the image edge or a burned-in annotation are excluded.
+- **Target:** *Process ▸ Subtract Background*, rolling ball radius 50 px, ImageJ's algorithm reproduced exactly. From here on only the target is measured; the nuclear stain only places boundary 1.
+- **Boundary 2, cells:** the background-subtracted target is smoothed (Gaussian, σ = 2 px) and counts as cell where it is more than 3 noise SDs above the cell-free background; holes smaller than a tenth of a nucleus are filled and thin spurs removed. That contour lies outside the edge of a bright cell by the blur of the optics and of the smoothing, so near it the outline is moved in to the half maximum of the edge (half way between the background and the cell just inside); dim edges barely move. Every nucleus then grows into the cell area around it, brighter and nearer pixels first (a compact watershed seeded with the nuclei, like CellProfiler's secondary objects), so neighbouring cells meet along the dimmest line between them, or half way where the target shows none. Particles smaller than a tenth of a typical nucleus (debris) get no cell. The outline can instead follow an ImageJ threshold method or a manual value, exactly as that threshold draws it.
+- **Regions:** the nucleus, inside boundary 1; the cytoplasm, from boundary 1 to boundary 2 (the cell minus every nucleus in it); and the cell-free area of the field. The cytoplasm can instead be a ring 0.3 × the nucleus diameter wide around the nucleus, as in high-content screening (pixels closer to a neighbouring nucleus go to that nucleus, and only pixels on a cell count), or all cell pixels within reach of the nucleus (territory).
+- **Values:** Nuc_Mean, Cyto_Mean and Background_Mean of the background-subtracted target; Nuc_corr = Nuc_Mean − Background_Mean, Cyto_corr = Cyto_Mean − Background_Mean, N/C = Nuc_corr ÷ Cyto_corr and C/N = Cyto_corr ÷ Nuc_corr. The *Cells* sheet also gives each cell's area and cytoplasm pixels.
+- A cell is not measured, with the reason recorded, if its nucleus fails the size or circularity filter, if its nucleus or its outline touches the image edge or an excluded region, if it has fewer than 15 cytoplasm pixels, or if Cyto_corr ≤ 0. Optional: exclude saturated cells, clumps or irregular shapes.
 
-Every filter, the rolling-ball radius, the ring and the background can be changed in the settings.
+The whole-cell N/C is higher than the ring's: the thin edges of a cell are dimmer than the cytoplasm around the nucleus (the cell is thinner there, not poorer in the protein), and the whole cell includes them. How much depends on where boundary 2 lies, so compare conditions analysed with the same cell outline settings, and check the outlines in the preview.
+
+Every filter, the rolling-ball radius, the cytoplasm region, the cell outline threshold and the background can be changed in the settings.
 
 ### SEM porosity
 
@@ -251,7 +254,8 @@ Options, all off by default so that results match the MATLAB script:
 | SEM data bars and scale bars on 37 micrographs from published membrane figures (resized and JPEG-compressed; graphic bars and bars written over the image) | bars found in 36 of 37; scale bars measured in 32, each within 1 px of the length read by eye, none wrong |
 | SEM porosity on synthetic membrane surfaces with known pores (`validation/sem_benchmark.py`, 6 images per case), default N = 4 | flat dark pores: porosity 3.2% found for 5.1% true, overlap 0.63, diameters 0.77 × true; pores with a dark core in grey walls (as in secondary-electron images): 1.3% for 5.1%, overlap 0.25, diameters 0.52 × true |
 | The same with N = 2 | flat pores: 5.1% for 5.1%, overlap 0.99; pores with grey walls: 3.6% for 5.1%, overlap 0.71; uneven brightness 0.68, charging patches 0.42. On textured real surfaces N = 2 can take much of the surface as pore, so N is a choice to check against traced images |
-| Per-cell protocol on synthetic cells with a known N/C of 0.6, 1.0 and 2.5 | per-cell median 0.63, 0.99 and 2.26; the paper method gives 0.71, 1.03 and 2.18 (pulled towards 1) |
+| Per-cell protocol on synthetic cells with a known N/C of 0.6, 1.0 and 2.5 | whole-cell cytoplasm: median 0.64, 1.02 and 2.42; perinuclear ring: 0.63, 0.99 and 2.26; the paper method gives 0.71, 1.03 and 2.18 (pulled towards 1) |
+| Cell outlines (boundary 2) against the true cells, synthetic fields with a known N/C of 2.5 (5 fields each) | separate cells: overlap (Jaccard) median 0.99 over 281 cells, N/C 2.43; touching cells: overlap median 0.91 over 439 cells, N/C 2.54 |
 
 The ImageJ comparisons can be re-run with the Java programs in [`validation/`](validation). The unit tests (`pytest`) check stored ImageJ and MATLAB reference values, and `microscount selftest` runs a quick check of the main steps on any computer.
 
@@ -266,6 +270,8 @@ microscount bio translocation rep1/ rep2/ rep3/ --control "vehicle" \
     --compare "vehicle" "drug" --compare "stimulus" "drug + stimulus" --out results
 microscount bio translocation path/to/images --method paper          # Noursadeghi et al. 2008 only
 microscount bio translocation path/to/images --size 50-inf --circularity 0.2-1 --rolling-ball 30
+microscount bio translocation path/to/images --cytoplasm ring          # perinuclear ring instead of the whole cell
+microscount bio translocation path/to/images --cell-threshold 12       # cell outlines at a grey value (or otsu, li …)
 microscount bio combine results_rep1/ results_rep2/ --control "vehicle"   # repetitions analysed separately
 microscount run results/settings.yaml                                 # repeat a saved analysis (or a combine.yaml)
 

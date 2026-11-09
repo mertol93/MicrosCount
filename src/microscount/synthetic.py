@@ -24,13 +24,18 @@ def translocation_field(
     Nuclei are ellipses inside larger round cell bodies on a jittered grid.
     Target intensity: background outside cells, ``cytoplasm`` in cell bodies and
     ``background + ratio * (cytoplasm - background)`` in nuclei, so that the true
-    background-subtracted ratio is exactly ``ratio``.
+    background-subtracted ratio is exactly ``ratio``. The truth also holds the label
+    images of the nuclei and of the cells (overlapping cell bodies split by the nearest
+    centre), numbered alike.
     """
     rng = np.random.default_rng(seed)
     h, w = shape
     yy, xx = np.mgrid[0:h, 0:w]
     nuc = np.zeros(shape, bool)
     cell = np.zeros(shape, bool)
+    nuc_lab = np.zeros(shape, np.int32)
+    cell_lab = np.zeros(shape, np.int32)
+    nearest = np.full(shape, np.inf)
     centres = []
     for cy in range(spacing // 2, h - spacing // 4, spacing):
         for cx in range(spacing // 2, w - spacing // 4, spacing):
@@ -42,10 +47,16 @@ def translocation_field(
             dy, dx = yy - y, xx - x
             u = dx * np.cos(th) + dy * np.sin(th)
             v = -dx * np.sin(th) + dy * np.cos(th)
-            nuc |= (u / a) ** 2 + (v / b) ** 2 <= 1
+            in_nuc = (u / a) ** 2 + (v / b) ** 2 <= 1
+            nuc |= in_nuc
             r = cell_radius * rng.uniform(0.85, 1.1)
-            cell |= dy**2 + dx**2 <= r**2
+            d2 = dy**2 + dx**2
+            cell |= d2 <= r**2
             centres.append((y, x))
+            nuc_lab[in_nuc] = len(centres)
+            closer = (d2 <= r**2) & (d2 < nearest)
+            cell_lab[closer] = len(centres)
+            nearest[closer] = d2[closer]
     cyt_level = cytoplasm
     nuc_level = background + ratio * (cytoplasm - background)
     t = np.full(shape, background, np.float64)
@@ -61,7 +72,7 @@ def translocation_field(
     return (
         np.clip(np.round(n), 0, 255).astype(np.uint8),
         np.clip(np.round(t), 0, 255).astype(np.uint8),
-        {"ratio": ratio, "n_cells": len(centres), "background": background},
+        {"ratio": ratio, "n_cells": len(centres), "background": background, "nuclei": nuc_lab, "cells": cell_lab},
     )
 
 

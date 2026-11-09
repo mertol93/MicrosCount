@@ -29,6 +29,16 @@ def test_cli_translocation_and_porosity(tmp_path):
     assert (s["background"], s["background_value"]) == ("manual", 2.5)
     assert main(["run", str(tmp_path / "out3" / "settings.yaml"), "--out", str(tmp_path / "out4")]) == 0
     assert (tmp_path / "out4" / "per_cell.csv").exists()
+    # cytoplasm: whole cell by default (with the cell outline areas), or a ring; cell outline thresholds
+    head = (tmp_path / "out" / "per_cell.csv").read_text(encoding="utf-8-sig").splitlines()[0].split(",")
+    assert "cell_area_px" in head and "cytoplasm_pixels" in head
+    assert main(["translocation", str(tmp_path), "--cytoplasm", "ring", "--out", str(tmp_path / "out5")]) == 0
+    assert "cell_area_px" not in (tmp_path / "out5" / "per_cell.csv").read_text(encoding="utf-8-sig").splitlines()[0]
+    for value, expected in (("otsu", ("otsu", None)), ("12.5", ("manual", 12.5)), ("auto", ("noise", None))):
+        assert main(["translocation", str(tmp_path), "--cell-threshold", value, "--out", str(tmp_path / "out6")]) == 0
+        s = yaml.safe_load((tmp_path / "out6" / "settings.yaml").read_text(encoding="utf-8"))["settings"]
+        assert (s["cell_threshold"], s["cell_threshold_value"]) == expected
+    assert main(["translocation", str(tmp_path), "--cell-threshold", "nonsense", "--out", str(tmp_path / "out7")]) == 2
     sem, _ = sem_image(seed=3)
     Image.fromarray(sem).save(tmp_path / "sem.jpg", quality=95)
     assert main(["materials", "porosity", str(tmp_path / "sem.jpg"), "--n-thresholds", "2", "--out",
@@ -90,8 +100,24 @@ def test_gui_smoke(tmp_path, monkeypatch):
     p.run_preview()
     wait(p)
     assert np.isfinite(p.preview.summary["paper_ratio"]) and p.preview.summary["n_cells_analysed"] > 20
+    assert p.preview.summary["cytoplasm_region"] == "cell" and p.preview.layers["cell_labels"] is not None
     p.view_combo.setCurrentIndex(p.view_combo.findData("target_corrected"))
     p._hover(10, 10)
+    c = next(c for c in p.preview.cells if c["included"])
+    p._hover(int(c["x"]) + 18, int(c["y"]))  # in the cytoplasm, between the boundaries
+    assert f"cell {c['cell']}:" in p.hover_label.text()
+    # the cytoplasm choice and the cell outline settings round-trip
+    assert not p.cell_thr_val.isEnabled() and not p.ring.isEnabled() and not p.cb_restrict.isEnabled()
+    p.cell_thr.setCurrentIndex(p.cell_thr.findData("manual"))
+    p.cell_thr_val.setValue(9.5)
+    s = p.get_settings()
+    assert p.cell_thr_val.isEnabled()
+    assert (s.cytoplasm, s.cell_threshold, s.cell_threshold_value) == ("cell", "manual", 9.5)
+    p.cyto.setCurrentIndex(p.cyto.findData("ring"))
+    assert p.ring.isEnabled() and not p.cell_thr.isEnabled() and p.get_settings().cytoplasm == "ring"
+    p.apply_settings(s)
+    assert p.cyto.currentData() == "cell" and p.cell_thr.currentData() == "manual" and p.cell_thr_val.value() == 9.5
+    p.apply_settings(type(s)())
     p.cb_cell.setChecked(False)
     assert p.get_settings().method == "paper"
     p.run_preview()
