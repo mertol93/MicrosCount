@@ -94,6 +94,26 @@ def write_csv(path: Path, rows: list[dict], first: list[str] | None = None) -> P
     return path
 
 
+_NUMBER = re.compile(r"[+-]?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?|[+-]?\.\d+([eE][+-]?\d+)?")
+
+
+def _xl(v):
+    """A value for a workbook cell: numbers stay numbers (also numbers read back from a CSV)."""
+    if isinstance(v, (bool, np.bool_)):
+        return bool(v)
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    if isinstance(v, (float, np.floating)):
+        v = float(v)
+        return v if math.isfinite(v) else None
+    if v is None:
+        return None
+    if isinstance(v, str) and _NUMBER.fullmatch(v.strip()):
+        f = float(v)
+        return int(f) if f.is_integer() and re.fullmatch(r"[+-]?\d+", v.strip()) else f
+    return v
+
+
 def write_xlsx(path: Path, sheets: dict[str, list[dict]], firsts: dict[str, list[str]] | None = None,
                notes: dict[str, str] | None = None) -> Path | None:
     try:
@@ -115,7 +135,7 @@ def write_xlsx(path: Path, sheets: dict[str, list[dict]], firsts: dict[str, list
         for c in ws[1]:
             c.font = Font(bold=True)
         for r in rows:
-            ws.append([_fmt(r.get(k)) if not isinstance(r.get(k), (list, dict)) else str(r.get(k)) for k in cols])
+            ws.append([_xl(r.get(k)) if not isinstance(r.get(k), (list, dict)) else str(r.get(k)) for k in cols])
         ws.freeze_panes = "A2"
         for i, k in enumerate(cols, start=1):
             width = min(45, max(10, len(str(k)) + 2))

@@ -218,6 +218,7 @@ def test_run_combine_and_command_line(tmp_path):
 
     wb = load_workbook(out / "results.xlsx", read_only=True)
     assert wb.sheetnames[:6] == ["Read me", "Summary", "Comparisons", "Conditions", "Fields", "Cells"]
+    _numbers_are_numbers(out / "results.xlsx")
     doc = yaml.safe_load((out / "settings.yaml").read_text(encoding="utf-8"))
     assert doc["settings"]["control_condition"] == "vehicle"
     assert {i["repetition"] for i in doc["inputs"]} == {"3", "4"}
@@ -232,6 +233,7 @@ def test_run_combine_and_command_line(tmp_path):
                  "--out", str(tmp_path / "comb")]) == 0
     comb = {(r["repetition"], r["condition"]): r for r in _csv(tmp_path / "comb" / "per_condition.csv")}
     assert set(comb) == set(joint)
+    _numbers_are_numbers(tmp_path / "comb" / "results.xlsx")  # also when read back from the CSV files
     for k in joint:
         assert float(comb[k]["field_median_nc_mean"]) == pytest.approx(float(joint[k]["field_median_nc_mean"]))
         assert float(comb[k]["responder_fraction"]) == pytest.approx(float(joint[k]["responder_fraction"]))
@@ -241,6 +243,22 @@ def test_run_combine_and_command_line(tmp_path):
     assert main(["run", str(out / "settings.yaml"), "--out", str(tmp_path / "again")]) == 0
     again = {(r["repetition"], r["condition"]): r for r in _csv(tmp_path / "again" / "per_condition.csv")}
     assert again[("4", "vehicle")]["field_median_nc_mean"] == joint[("4", "vehicle")]["field_median_nc_mean"]
+
+
+def _numbers_are_numbers(path):
+    """Measured values are numbers in the workbook (not text), so Excel can sum, average and plot them."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path, read_only=True)
+    for sheet, cols in (("Summary", ("mean", "n_cells")), ("Fields", ("median_nc", "n_cells_analysed")),
+                        ("Cells", ("nc_ratio", "nucleus_area_px"))):
+        rows = wb[sheet].iter_rows(values_only=True)
+        head = list(next(rows))
+        values = [r[head.index(c)] for r in rows for c in cols]
+        assert values and all(isinstance(v, (int, float)) or v is None for v in values), sheet
+        assert any(isinstance(v, float) for v in values)
+    field = [r[0] for r in wb["Fields"].iter_rows(min_row=2, values_only=True)]
+    assert all(isinstance(v, str) for v in field)  # names stay text
 
 
 def _csv(path):
