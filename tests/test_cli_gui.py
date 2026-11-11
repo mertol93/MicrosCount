@@ -39,6 +39,10 @@ def test_cli_translocation_and_porosity(tmp_path):
         s = yaml.safe_load((tmp_path / "out6" / "settings.yaml").read_text(encoding="utf-8"))["settings"]
         assert (s["cell_threshold"], s["cell_threshold_value"]) == expected
     assert main(["translocation", str(tmp_path), "--cell-threshold", "nonsense", "--out", str(tmp_path / "out7")]) == 2
+    assert main(["translocation", str(tmp_path), "--nuclear-fallback", "none", "--out", str(tmp_path / "out8")]) == 0
+    s = yaml.safe_load((tmp_path / "out8" / "settings.yaml").read_text(encoding="utf-8"))["settings"]
+    assert s["nuclear_threshold_fallback"] == "none"
+    assert main(["translocation", str(tmp_path), "--nuclear-fallback", "nonsense", "--out", str(tmp_path / "o9")]) == 2
     sem, _ = sem_image(seed=3)
     Image.fromarray(sem).save(tmp_path / "sem.jpg", quality=95)
     assert main(["materials", "porosity", str(tmp_path / "sem.jpg"), "--n-thresholds", "2", "--out",
@@ -118,6 +122,19 @@ def test_gui_smoke(tmp_path, monkeypatch):
     p.apply_settings(s)
     assert p.cyto.currentData() == "cell" and p.cell_thr.currentData() == "manual" and p.cell_thr_val.value() == 9.5
     p.apply_settings(type(s)())
+    # the nuclear-threshold fallback: on by default, off round-trips, none for a manual threshold
+    assert p.cb_fallback.isChecked() and p.get_settings().nuclear_threshold_fallback == "isodata"
+    p.cb_fallback.setChecked(False)
+    off = p.get_settings()
+    assert off.nuclear_threshold_fallback == "none"
+    p.apply_settings(type(s)())
+    assert p.cb_fallback.isChecked()
+    p.apply_settings(off)
+    assert not p.cb_fallback.isChecked()
+    p.nuc_thr.setCurrentIndex(p.nuc_thr.findData("manual"))
+    assert not p.cb_fallback.isEnabled()
+    p.apply_settings(type(s)())
+    assert p.cb_fallback.isEnabled()
     p.cb_cell.setChecked(False)
     assert p.get_settings().method == "paper"
     p.run_preview()

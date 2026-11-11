@@ -78,6 +78,10 @@ def _translocation_args(t: argparse.ArgumentParser) -> None:
                    help="particle size filter for nuclei in px² (default 0-Infinity)")
     g.add_argument("--circularity", type=lambda s: _range(s, "--circularity"), metavar="MIN-MAX",
                    help="particle circularity filter (default 0.2-1.0)")
+    g.add_argument("--nuclear-fallback", metavar="METHOD|none",
+                   help="when the nuclear threshold fails (it lies in the background noise of a dim stain), find the "
+                        "nuclei with this method on the stain smoothed twice as much, then in every field of the run "
+                        "(default isodata; none = off)")
     g.add_argument("--rolling-ball", type=float, metavar="PX",
                    help="Subtract Background radius for the target channel in px (default 50; 0 = off)")
     g.add_argument("--background", metavar="auto|none|VALUE",
@@ -191,6 +195,15 @@ def cmd_translocation(a) -> int:
     if a.circularity:
         s.circularity_min, hi = a.circularity
         s.circularity_max = 1.0 if hi is None else hi
+    if a.nuclear_fallback:
+        from .bio.translocation import fallback_setting
+
+        s.nuclear_threshold_fallback = a.nuclear_fallback.strip().lower()
+        try:
+            fallback_setting(s)
+        except ValueError as exc:
+            print(f"--nuclear-fallback: {exc}", file=sys.stderr)
+            return 2
     if a.rolling_ball is not None:
         s.rolling_ball_radius = a.rolling_ball
     if a.background:

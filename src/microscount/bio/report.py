@@ -36,7 +36,9 @@ from ..core.report import (  # noqa: F401 - default_output_dir is re-exported
     _style, write_csv, write_settings_yaml, write_xlsx,
 )
 from .experiment import ExperimentDesign, ExperimentSummary, combine_result_folders, summarise_experiment
-from .translocation import FieldResult, FieldSpec, TranslocationSettings, analyse_field
+from .translocation import (
+    FieldResult, FieldSpec, TranslocationSettings, analyse_field, fallback_method, fallback_smoothing,
+)
 
 REPETITION_COLOURS = ("#2a78d6", "#eb6834", "#1baf7a")  # categorical slots 1-3 (validated for scatter)
 NUCLEAR_COLOUR = SERIES  # categorical slot 1
@@ -48,7 +50,8 @@ FIELD_FIRST = [
     "n_cells_analysed", "median_nc", "q1_nc", "q3_nc", "mean_nc", "sd_nc", "median_cn", "mean_cn",
     "mean_nuc_corr", "mean_cyto_corr", "background_mean", "background_source", "rolling_ball_radius",
     "responder_fraction", "n_particles", "n_nuclei", "excluded_cells", "nucleus_diameter_px", "cytoplasm_region",
-    "cell_outline_threshold", "median_cell_area_px",
+    "cell_outline_threshold", "median_cell_area_px", "segmentation_method", "segmentation_fallback",
+    "nuclear_threshold_failed", "segmentation_snr",
     # paper method
     "paper_ratio", "paper_ok", "paper_nuclear_mean", "paper_cytoplasm_mean", "paper_nuclear_area_px",
     "paper_cytoplasm_area_px", "nuclear_threshold", "target_threshold", "threshold_method", "nuclei_count",
@@ -371,6 +374,123 @@ def write_experiment(out: Path, exp: ExperimentSummary, field_rows: list[dict], 
 
 # ---------------------------------------------------------------------- batch: translocation
 
+SMALL_NUCLEI = 0.5  # a field whose nuclei are less than this x the run's median diameter is flagged
+# a field rescued by the fallback threshold changes how the other fields are measured only if it holds at least this
+# share of their median number of cells (not, for example, an empty field with a speck of debris)
+SWITCH_MIN_CELLS = 0.25
+
+
+def _cells(r: FieldResult) -> int:
+    v = r.summary.get("n_cells_analysed")
+    return int(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0
+
+
+def _names(subset: list[FieldResult], results: list[FieldResult], limit: int = 12) -> str:
+    """The fields of ``subset``, e.g. "field 2 of vehicle in Rep 3"; the repetition when ``results`` has several."""
+    several = len({r.repetition for r in results}) > 1
+
+    def name(r: FieldResult) -> str:
+        f = str(r.field_id)
+        f = f if f.lower().startswith("field") else f"field {f}"
+        f = f"{f} of {r.condition}" if r.condition else f
+        return f"{f} in {r.repetition}" if several and r.repetition else f
+
+    ids = [name(r) for r in subset]
+    return "; ".join(ids[:limit]) + (f"; and {len(ids) - limit} more" if len(ids) > limit else "")
+
+
+def _same_nuclei_everywhere(results: list[FieldResult], analysed: list[tuple[FieldSpec, str]],
+                            analyse: Callable[..., FieldResult], settings: TranslocationSettings, errors: list[dict],
+                            progress: Progress | None = None, cancel: Callable[[], bool] | None = None) -> list[str]:
+    """Once one field needed the fallback nuclear threshold, find the nuclei of every field with it.
+
+    Boundary 1 changes N/C, so a run that mixed the two thresholds would compare fields measured differently. The
+    fields whose own threshold passed are analysed again with the fallback first (``results`` is updated in place); a
+    field where the fallback fails keeps its own threshold and says so. A rescued field with almost no cells does not
+    count (``SWITCH_MIN_CELLS``). Not for the paper method, whose ratio does not use these nuclei. Returns the notes for
+    the Read me and settings.yaml.
+    """
+    fb = fallback_method(settings)
+    t = settings.nuclear_threshold
+    sigma0 = float(settings.segmentation_smoothing_px or 0)
+    notes: list[str] = []
+    rescued = [r for r in results if r.summary.get("segmentation_fallback")] if fb else []
+    passed = [_cells(r) for r in results if r.summary.get("nuclear_threshold_failed") is False]
+    ref = float(np.median(passed)) if passed else 0.0
+    switch = [r for r in rescued if _cells(r) > 0 and _cells(r) >= SWITCH_MIN_CELLS * ref]
+    if rescued and not switch:
+        notes.append(f"'{fb}' found the nuclei in {len(rescued)} field(s) where '{t}' failed: "
+                     f"{_names(rescued, results)}. They hold too few cells to change how the other fields are "
+                     f"measured, which keep '{t}'.")
+    if switch and settings.method != "paper":
+        redo = [k for k, r in enumerate(results)
+                if not r.summary.get("segmentation_fallback") and r.summary.get("nuclear_threshold_failed") is False]
+        for j, k in enumerate(redo):
+            if cancel and cancel():
+                errors.append({"field": "", "error": "cancelled by user while the nuclei were found again with the "
+                                                     "fallback threshold: the run mixes the two thresholds"})
+                break
+            spec, fid = analysed[k]
+            if progress:
+                progress(j, len(redo), f"{fid}: nuclei again with '{fb}'")
+            try:
+                r = analyse(spec, fid, prefer_fallback=True)
+            except Exception as exc:  # noqa: BLE001 - keep the first result
+                errors.append({"field": fid, "nuclear_file": spec.nuclear_path, "target_file": spec.target_path,
+                               "error": f"analysis with the fallback threshold failed, first result kept: {exc}"})
+                continue
+            r.summary["nuclear_threshold_failed"] = False  # it passed in the first pass
+            results[k] = r
+        failed = [r for r in results if r.summary.get("nuclear_threshold_failed")]
+        used = [r for r in results if r.summary.get("segmentation_fallback")]
+        own = [r for r in results if r.summary.get("nuclear_threshold_failed") is False
+               and not r.summary.get("segmentation_fallback")]
+        where = "every field" if len(used) == len(results) else f"{len(used)} of the {len(results)} fields"
+        notes.append(f"Nuclei (boundary 1): the nuclear threshold '{t}' (smoothing {sigma0:g} px) failed in "
+                     f"{len(failed)} of {len(results)} fields: it lay in the background noise of the nuclear stain, or "
+                     f"put almost none or more than half of the field in the nuclei. So that the fields are measured "
+                     f"alike, the nuclei of {where} were found with '{fb}' on the stain smoothed with "
+                     f"{fallback_smoothing(sigma0):g} px instead (Fields sheet: segmentation_method). To keep '{t}' in "
+                     f"every field, turn the fallback off (nuclear_threshold_fallback: none).")
+        if own:
+            notes.append(f"'{fb}' failed in {len(own)} field(s) where '{t}' works, so they keep '{t}' and are measured "
+                         f"unlike the rest: {_names(own, results)}.")
+    lost = [r for r in results if r.summary.get("nuclear_threshold_failed")
+            and not r.summary.get("segmentation_fallback")]
+    if lost:
+        notes.append(f"The nuclei could not be found reliably in {len(lost)} field(s): {_names(lost, results)}. "
+                     "Their nuclear stain may be too dim: check their overlays before using them.")
+    return notes
+
+
+def _flag_small_nuclei(results: list[FieldResult]) -> list[str]:
+    """Warn on fields whose nuclei are much smaller than in the rest of the run: the nuclear threshold has failed.
+
+    A threshold that picks up noise turns the stain into specks a few pixels wide. The threshold check
+    (``nuclear_threshold_check``) can miss this on a very dim, uneven stain; the specks' small diameter does not.
+    """
+    def diameter(r: FieldResult) -> float:
+        v = r.summary.get("nucleus_diameter_px")
+        return float(v) if isinstance(v, (int, float)) and math.isfinite(v) and v > 0 else math.nan
+
+    vals = [d for d in map(diameter, results) if math.isfinite(d)]
+    if len(vals) < 3:
+        return []
+    med = float(np.median(vals))
+    small = [r for r in results if diameter(r) < SMALL_NUCLEI * med]
+    for r in small:
+        r.warnings.append(f"the nuclei found are small (diameter {diameter(r):.1f} px, against a median of "
+                          f"{med:.1f} px in this run): the nuclear threshold has probably picked up noise; check the "
+                          "overlay")
+    # fields whose threshold failed outright have their own note (_same_nuclei_everywhere)
+    small = [r for r in small if not (r.summary.get("nuclear_threshold_failed") and
+                                      not r.summary.get("segmentation_fallback"))]
+    if not small:
+        return []
+    return [f"The nuclei found in {len(small)} field(s) are less than half as wide as the median of the run "
+            f"({med:.1f} px): {_names(small, results)}. Their nuclear threshold has probably picked up noise: check "
+            "their overlays before using them."]
+
 
 def run_translocation(
     specs: list[FieldSpec],
@@ -386,27 +506,40 @@ def run_translocation(
     if save_overlays:
         ov_dir.mkdir(exist_ok=True)
     results: list[FieldResult] = []
+    analysed: list[tuple[FieldSpec, str]] = []  # (spec, field id) of each result
     errors: list[dict] = []
     n = len(specs)
+
+    def analyse(spec: FieldSpec, fid: str, prefer_fallback: bool = False) -> FieldResult:
+        nuc = load_image(spec.nuclear_path)
+        tgt = nuc if spec.target_path == spec.nuclear_path else load_image(spec.target_path)
+        r = analyse_field(nuc, tgt, settings, fid, spec.condition, keep_layers=save_overlays,
+                          repetition=spec.repetition or "1", prefer_fallback=prefer_fallback)
+        if save_overlays and r.layers is not None:
+            save_png(ov_dir / f"{_safe(fid)}_{_safe(Path(spec.nuclear_path).stem)}_overlay.png",
+                     translocation_overlay(r.layers, base="target"))
+        r.layers = None
+        return r
+
+    cancelled = False
     for i, spec in enumerate(specs):
         if cancel and cancel():
             errors.append({"field": "", "error": "cancelled by user"})
+            cancelled = True
             break
         fid = spec.field_id or f"field_{i + 1:03d}"
         if progress:
             progress(i, n, f"{fid}: {Path(spec.nuclear_path).name}")
         try:
-            nuc = load_image(spec.nuclear_path)
-            tgt = nuc if spec.target_path == spec.nuclear_path else load_image(spec.target_path)
-            r = analyse_field(nuc, tgt, settings, fid, spec.condition, keep_layers=save_overlays,
-                              repetition=spec.repetition or "1")
-            if save_overlays and r.layers is not None:
-                save_png(ov_dir / f"{_safe(fid)}_{_safe(Path(spec.nuclear_path).stem)}_overlay.png",
-                         translocation_overlay(r.layers, base="target"))
-            r.layers = None
-            results.append(r)
+            results.append(analyse(spec, fid))
+            analysed.append((spec, fid))
         except Exception as exc:  # noqa: BLE001
             errors.append({"field": fid, "nuclear_file": spec.nuclear_path, "target_file": spec.target_path, "error": str(exc)})
+    run_notes: list[str] = []
+    if settings.method != "paper":  # the paper ratio does not use the individual nuclei
+        if not cancelled:
+            run_notes = _same_nuclei_everywhere(results, analysed, analyse, settings, errors, progress, cancel)
+        run_notes += _flag_small_nuclei(results)
     if progress:
         progress(n, n, "writing results")
     design = ExperimentDesign.from_settings(settings)
@@ -418,6 +551,7 @@ def run_translocation(
     cell_rows = [c for r in results for c in r.cells]
     crit = (int(settings.fields_per_condition), int(settings.min_cells_per_condition))
     exp = summarise_experiment(field_rows, cell_rows, design, crit)
+    exp.notes.extend(run_notes)
     hist_rows = []
     for r in results:
         h = getattr(r, "histograms", None)
@@ -434,7 +568,7 @@ def run_translocation(
         files["errors"] = write_csv(out / "errors.csv", errors)
     inputs = [{"field": s.field_id, "condition": s.condition, "repetition": s.repetition, "nuclear": s.nuclear_path,
                "target": s.target_path} for s in specs]
-    files["settings"] = write_settings_yaml(out / "settings.yaml", "translocation", settings, inputs)
+    files["settings"] = write_settings_yaml(out / "settings.yaml", "translocation", settings, inputs, notes=run_notes)
     try:
         f = histogram_figure(out / "histograms.png", condition_histograms(results))
         if f:

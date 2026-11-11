@@ -23,7 +23,9 @@ Per-cell lab protocol (``method="per_cell"``, the default; adds to the paper met
     1. nuclei (blue): the nuclear stain is thresholded (after light Gaussian smoothing),
        holes are filled, touching nuclei are split (watershed), and the particles are
        filtered as by *Analyze Particles* - Size 0-Infinity px^2, Circularity 0.2-1.0,
-       with ImageJ's traced perimeter so that the values match ImageJ;
+       with ImageJ's traced perimeter so that the values match ImageJ. When the threshold
+       fails (``nuclear_threshold_check``), IsoData on the stain smoothed twice as much
+       finds the nuclei instead (``nuclear_threshold_fallback``);
     2. target (green): *Process > Subtract Background*, rolling ball radius 50 px
        (30-50 px in the protocol), ImageJ's algorithm reproduced exactly;
     3. boundaries: the nuclei of step 1 are boundary 1; the outline of every cell on the
@@ -48,7 +50,7 @@ import numpy as np
 from scipy import ndimage as ndi
 
 from ..core.imageio import ChannelError, LoadedImage
-from ..core.thresholds import compute_threshold
+from ..core.thresholds import METHOD_LABELS, compute_threshold
 
 NUCLEAR_TOKENS = ("dapi", "hoechst", "nuclear", "nuclei", "nucleus", "draq5", "h33342", "sytox", "pi")
 
@@ -81,6 +83,10 @@ class TranslocationSettings:
     min_cells_per_condition: int = 500
     # ---- per-cell lab protocol: nuclei (blue) as ImageJ Analyze Particles
     segmentation_smoothing_px: float = 2.0  # Gaussian sigma before thresholding the nuclear stain
+    # when the nuclear threshold fails (it lies in the background noise, or puts almost none or more than half of the
+    # field in the nuclei), the nuclei are found with this method on the stain smoothed with twice the sigma; in a
+    # batch every field then uses it (bio.report.run_translocation). "none" (or None) = off
+    nuclear_threshold_fallback: str | None = "isodata"
     split_touching: bool = True  # watershed, as Process > Binary > Watershed
     split_sensitivity: float = 0.10  # neck depth needed to split, x nucleus diameter
     nucleus_diameter_px: float | None = None  # None = estimated from the image
@@ -281,6 +287,59 @@ def estimate_background(img_f: np.ndarray, region: np.ndarray) -> tuple[float, f
     else:
         sigma = float(np.std(vals))
     return float(mode), max(sigma, 0.5 * bw, 1e-6)
+
+
+# A nuclear threshold has failed when it lies within this many noise SDs of the background of the smoothed stain,
+# or when the nuclei it finds cover less or more than this share of the analysable field.
+SEG_MIN_SNR = 2.5
+SEG_MASK_RANGE = (0.002, 0.5)
+
+
+def nuclear_threshold_check(img_f: np.ndarray, threshold: float, region: np.ndarray) -> dict:
+    """Does a threshold of the (smoothed) nuclear stain separate nuclei from the background?
+
+    The background and its noise are estimated as for the cell outlines (``estimate_background``). On a dim stain an
+    automatic threshold can settle in the background peak: it then lies within a noise SD or two of the background
+    and turns much of the field into "nuclei".
+    """
+    bg, sd = estimate_background(img_f, region)
+    n = max(1, int(np.count_nonzero(region)))
+    frac = float(np.count_nonzero((img_f > threshold) & region)) / n
+    snr = (float(threshold) - bg) / sd if sd > 0 else math.inf
+    reason = ""
+    if not snr >= SEG_MIN_SNR:
+        reason = f"lies in the background noise ({snr:.1f} noise SD above the background)"
+    elif frac > SEG_MASK_RANGE[1]:
+        reason = f"puts {100 * frac:.0f}% of the field in the nuclei"
+    elif frac < SEG_MASK_RANGE[0]:
+        reason = "finds almost no nuclei"
+    return {"threshold": float(threshold), "background": bg, "noise_sd": sd, "snr": snr, "mask_fraction": frac,
+            "failed": bool(reason), "reason": reason}
+
+
+def fallback_smoothing(sigma: float) -> float:
+    """Smoothing (Gaussian sigma, px) for the fallback nuclear threshold: twice the configured one, at least 2 px."""
+    return max(2.0 * float(sigma or 0), 2.0)
+
+
+FALLBACK_OFF = ("", "none", "off", "false", "no")
+
+
+def fallback_setting(s: "TranslocationSettings") -> str:
+    """The fallback nuclear threshold method set in ``s``, or "" when it is off."""
+    fb = str(s.nuclear_threshold_fallback or "").strip().lower()
+    if fb in FALLBACK_OFF:
+        return ""
+    if fb not in METHOD_LABELS or fb == "manual":
+        raise ValueError(f"unknown nuclear_threshold_fallback '{fb}': use one of "
+                         f"{', '.join(k for k in METHOD_LABELS if k != 'manual')}, or none")
+    return fb
+
+
+def fallback_method(s: "TranslocationSettings") -> str:
+    """The fallback nuclear threshold method in use, or "" when there is none (off, or a manual threshold)."""
+    fb = fallback_setting(s)
+    return "" if str(s.nuclear_threshold).lower() == "manual" else fb
 
 
 def channel_shift(a: np.ndarray, b: np.ndarray, valid: np.ndarray) -> tuple[float, float, float]:
@@ -497,7 +556,14 @@ def analyse_field(
     condition: str = "",
     keep_layers: bool = True,
     repetition: str = "",
+    prefer_fallback: bool = False,
 ) -> FieldResult:
+    """Analyse one field (paper method, and the per-cell protocol unless ``method`` is "paper").
+
+    Nuclei are found with ``nuclear_threshold``; when it fails its check (``nuclear_threshold_check``), with the
+    fallback method on the stain smoothed twice as much. ``prefer_fallback`` tries the fallback first, so that every
+    field of a batch finds its nuclei alike once one field needed the fallback.
+    """
     s = settings or TranslocationSettings()
     per_cell = s.method != "paper"
     warns: list[str] = []
@@ -545,22 +611,52 @@ def analyse_field(
         if thr.note:
             warns.append(f"{name} threshold: {thr.note}")
     paper_ok = 0.002 <= frac_n <= 0.6 and 0.005 <= frac_t <= 0.97
+    paper = "paper method: " if per_cell else ""  # these masks give the paper ratio, not the per-cell values
     if frac_n > 0.6 or frac_n < 0.002:
-        warns.append(f"the nuclear mask covers {100 * frac_n:.1f}% of the field: the automatic threshold has "
+        warns.append(f"{paper}the nuclear mask covers {100 * frac_n:.1f}% of the field: the automatic threshold has "
                      "probably failed (check the overlay; try another ImageJ threshold variant)")
     if frac_t > 0.97 or frac_t < 0.005:
-        warns.append(f"the target mask covers {100 * frac_t:.1f}% of the field: check the target threshold")
+        warns.append(f"{paper}the target mask covers {100 * frac_t:.1f}% of the field: check the target threshold")
 
     sat = tgt.saturation_value
     saturated = (t_raw >= sat) if sat is not None else np.zeros(t_raw.shape, bool)
 
     # ---- 2. individual nuclei: particles for the per-cell step, or a count for the paper's
     # ">= 500 cells" criterion. Smoothing keeps dim, noisy nuclei whole.
-    sigma = float(s.segmentation_smoothing_px or 0)
-    n_seg = ndi.gaussian_filter(n_raw.astype(np.float32), sigma) if sigma > 0 else n_f
-    thr_seg = compute_threshold(n_seg, s.nuclear_threshold, valid, s.nuclear_threshold_value,
-                                s.legacy_inclusive_threshold)
+    sigma0 = float(s.segmentation_smoothing_px or 0)
+    fb = fallback_method(s)
+    configured = {"method": s.nuclear_threshold, "sigma": sigma0, "value": s.nuclear_threshold_value, "fallback": False}
+    candidates = [configured]
+    if fb:
+        fallback = {"method": fb, "sigma": fallback_smoothing(sigma0), "value": None, "fallback": True}
+        candidates = [fallback, configured] if prefer_fallback else [configured, fallback]
+    smoothed: dict[float, np.ndarray] = {}
+    for c in candidates:  # the first candidate whose threshold passes the check finds the nuclei
+        sg = c["sigma"]
+        if sg not in smoothed:
+            smoothed[sg] = ndi.gaussian_filter(n_raw.astype(np.float32), sg) if sg > 0 else n_f
+        c["thr"] = compute_threshold(smoothed[sg], c["method"], valid, c["value"], s.legacy_inclusive_threshold)
+        c["check"] = nuclear_threshold_check(smoothed[sg], c["thr"].value, valid)
+        if not c["check"]["failed"]:
+            break
+    tried = [c for c in candidates if "check" in c]
+    # when nothing passes, every candidate was tried: keep the configured threshold, as before 0.5.2
+    used = next((c for c in tried if not c["check"]["failed"]), configured)
+    sigma, thr_seg, n_seg = used["sigma"], used["thr"], smoothed[used["sigma"]]
     seg_mask = (n_seg > thr_seg.value) & valid
+    m0 = f"'{s.nuclear_threshold}'"
+    if used["check"]["failed"]:
+        bits = [f"{'the nuclear threshold ' if not c['fallback'] else ''}'{c['method']}' (smoothing {c['sigma']:g} px) "
+                f"{c['check']['reason']}" for c in tried]
+        warns.append("nuclei could not be found reliably: " + "; ".join(bits) +
+                     ". The nuclear stain may be too dim: check the overlay")
+    elif used["fallback"] and "check" in configured:
+        warns.append(f"the nuclear threshold {m0} (smoothing {sigma0:g} px) {configured['check']['reason']}: nuclei "
+                     f"found with '{fb}' on the stain smoothed with {sigma:g} px instead")
+    elif not used["fallback"] and fb and prefer_fallback:
+        fbc = next(c for c in tried if c["fallback"])
+        warns.append(f"'{fb}' (smoothing {fbc['sigma']:g} px) {fbc['check']['reason']} in this field, so its nuclei "
+                     f"were found with {m0} (smoothing {sigma0:g} px), unlike the rest of the run")
     if per_cell:
         # as ImageJ: threshold, fill holes, (watershed), 8-connected particles, no size cut here
         labels, seg = segment_nuclei(n_seg, seg_mask, s.nucleus_diameter_px, s.split_touching, s.split_sensitivity,
@@ -610,6 +706,12 @@ def analyse_field(
         "channel_shift_dx": dx,
         "channel_similarity": rcorr,
         "valid_fraction": float(valid.mean()),
+        # how boundary 1 was found: method and smoothing, whether the fallback was needed, and how far the threshold
+        # lies above the background noise of the smoothed stain
+        "segmentation_method": f"{used['method']}, smoothing {sigma:g} px",
+        "segmentation_fallback": bool(used["fallback"]),
+        "nuclear_threshold_failed": configured["check"]["failed"] if "check" in configured else None,
+        "segmentation_snr": used["check"]["snr"],
     }
     if s.pixel_size_um:
         summary["pixel_size_um"] = float(s.pixel_size_um)
@@ -990,7 +1092,11 @@ def analyse_fields(
     cancel: Callable[[], bool] | None = None,
     loader=None,
 ) -> tuple[list[FieldResult], list[dict]]:
-    """Run a batch; returns (results, errors)."""
+    """Run a batch; returns (results, errors).
+
+    Each field is analysed on its own, with its own nuclear-threshold fallback; ``bio.report.run_translocation`` also
+    finds every field's nuclei alike once one field needs the fallback.
+    """
     from ..core.imageio import load_image
 
     loader = loader or load_image

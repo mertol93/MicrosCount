@@ -281,6 +281,31 @@ def load_result_folder(folder: str | Path, repetition: str | None = None) -> tup
     return fr, cr
 
 
+def segmentation_methods(folder: str | Path, field_rows: list[dict]) -> dict[str, int]:
+    """How the nuclei of a per-cell result folder were found: {"<threshold>, smoothing <sigma> px": fields}.
+
+    Read from the Fields table (MicrosCount 0.5.2 and later), else from the folder's settings.yaml, where every field
+    used the one nuclear threshold. Empty for the paper method or when it cannot be told.
+    """
+    rows = [r for r in field_rows if str(r.get("method") or "").strip() != "paper"]
+    if not rows:
+        return {}
+    out: dict[str, int] = {}
+    for r in rows:
+        m = str(r.get("segmentation_method") or "").strip()
+        if m:
+            out[m] = out.get(m, 0) + 1
+    if out:
+        return out
+    try:
+        from ..core.report import read_settings_yaml
+
+        s = read_settings_yaml(Path(folder) / "settings.yaml").get("settings") or {}
+        return {f"{s['nuclear_threshold']}, smoothing {float(s['segmentation_smoothing_px'] or 0):g} px": len(rows)}
+    except Exception:  # noqa: BLE001 - no or an older settings file
+        return {}
+
+
 def combine_result_folders(folders: list[str | Path], design: ExperimentDesign | None = None,
                            repetitions: list[str] | None = None) -> tuple[ExperimentSummary, list[dict], list[dict]]:
     """Summarise several result folders (e.g. one per repetition) as one experiment."""
@@ -288,8 +313,16 @@ def combine_result_folders(folders: list[str | Path], design: ExperimentDesign |
 
     folders = [Path(f) for f in folders]
     loaded = [load_result_folder(f) for f in folders]
+    # before combine_repetitions, which may relabel the repetitions in the rows
+    seg = [(f.name, segmentation_methods(f, fr)) for f, (fr, _) in zip(folders, loaded)]
     notes = combine_repetitions(folders, [fr for fr, _ in loaded], [cr for _, cr in loaded], "condition", repetitions,
                                 "field")
+    if len({m for _, ms in seg for m in ms}) > 1:
+        each = "; ".join(f"{name}: " + ", ".join(f"{m} ({k} field{'s' if k != 1 else ''})" for m, k in ms.items())
+                         for name, ms in seg if ms)
+        notes.append(f"The nuclei (boundary 1) were not all found alike ({each}). Boundary 1 changes N/C, so these "
+                     "fields are not measured alike: analyse the folders in one run, where the fields share the "
+                     "nuclear threshold, or with the same threshold settings.")
     all_f = [r for fr, _ in loaded for r in fr]
     all_c = [r for _, cr in loaded for r in cr]
     exp = summarise_experiment(all_f, all_c, design)

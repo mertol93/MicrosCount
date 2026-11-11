@@ -21,7 +21,7 @@ from ..bio.experiment import ExperimentDesign, order_conditions
 from ..bio.pairing import FileEntry, Pairing, assign_conditions, condition_key, label_fields, pair_files, scan_files
 from ..core.render import translocation_overlay
 from ..core.thresholds import METHOD_LABELS
-from ..bio.translocation import FieldSpec, TranslocationSettings, analyse_field
+from ..bio.translocation import FieldSpec, TranslocationSettings, analyse_field, fallback_setting
 from .common import (
     IMAGE_FILTER, DropTable, FitImageLabel, ImageViewer, LogView, MplCanvas, PathBox, ScaleBarDialog, Task, expand_paths,
     fill_table, message, open_folder, start_task,
@@ -39,7 +39,8 @@ CELL_THRESHOLD = [("Automatic: above the background noise", "noise")] + \
 FIELD_COLS = [("field", "Field"), ("condition", "Condition"), ("repetition", "Repetition"), ("n_cells_analysed", "Cells"),
               ("median_nc", "Median N/C"), ("q1_nc", "Q1"), ("q3_nc", "Q3"), ("median_cn", "Median C/N"),
               ("background_mean", "Background_Mean"), ("responder_fraction", "Fraction N/C > cut-off"),
-              ("paper_ratio", "Paper N/C (field)"), ("paper_ok", "Paper threshold OK"), ("warnings", "Warnings"),
+              ("paper_ratio", "Paper N/C (field)"), ("paper_ok", "Paper threshold OK"),
+              ("segmentation_method", "Nuclei found with"), ("warnings", "Warnings"),
               ("nuclear_file", "Nuclear image"), ("target_file", "Target image")]
 PAPER_FIELD_COLS = [("field", "Field"), ("condition", "Condition"), ("repetition", "Repetition"), ("paper_ratio", "N/C ratio"),
                     ("paper_ok", "Threshold OK"),
@@ -76,6 +77,14 @@ def _set_combo(c: QComboBox, data):
     i = c.findData(data)
     if i >= 0:
         c.setCurrentIndex(i)
+
+
+def _fallback_on(s: TranslocationSettings) -> str:
+    """The fallback nuclear threshold set in ``s`` ("" when off or not a known method)."""
+    try:
+        return fallback_setting(s)
+    except ValueError:
+        return ""
 
 
 def _dspin(lo, hi, val, dec=2, step=1.0, special="", suffix="", tip=""):
@@ -308,6 +317,13 @@ class TranslocationPage(QWidget):
         self.smooth = _dspin(0, 20, 2, 1, 0.5, "off", " px", "Gaussian smoothing of the nuclear stain before it is "
                              "thresholded, so that dim, noisy nuclei come out whole.")
         fa.addRow("Nucleus detection smoothing:", self.smooth)
+        self.cb_fallback = QCheckBox("If the nuclear threshold fails, find the nuclei with IsoData")
+        self.cb_fallback.setToolTip(
+            "A threshold has failed when it lies in the background noise of the smoothed nuclear stain, or puts almost "
+            "none or more than half of the field in the nuclei (a dim, hazy stain). The nuclei are then found with "
+            "IsoData on the stain smoothed twice as much; once one field of a run needs this, every field uses it, so "
+            "that all are measured alike.")
+        fa.addRow(self.cb_fallback)
         self.cb_split = QCheckBox("Split touching nuclei (watershed)")
         fa.addRow(self.cb_split)
         self.split_sens = _dspin(0.02, 0.5, 0.10, 2, 0.01, tip="Neck depth needed to split, as a fraction of the "
@@ -350,8 +366,8 @@ class TranslocationPage(QWidget):
         f3.addRow(self.adv)
         self._cell_widgets = [self.cell_hdr, self.size_min, self.size_max, self.circ_min, self.circ_max, self.cb_border,
                               self.rb_radius, self.bg, self.ring, self.cb_sat, self.adv_cell_hdr, self.smooth,
-                              self.cb_split, self.split_sens, self.diam, self.erode, self.gap, self.cyto,
-                              self.cb_restrict, self.cell_sig, self.resp, self.cell_thr, self.cell_thr_val,
+                              self.cb_fallback, self.cb_split, self.split_sens, self.diam, self.erode, self.gap,
+                              self.cyto, self.cb_restrict, self.cell_sig, self.resp, self.cell_thr, self.cell_thr_val,
                               self.cell_smooth]
         self.nuc_thr.currentIndexChanged.connect(self._sync_target_threshold)
         self.nuc_thr.currentIndexChanged.connect(self._sync_enabled)
@@ -564,6 +580,7 @@ class TranslocationPage(QWidget):
         self.cell_thr_val.setEnabled(per_cell and cyto == "cell" and self.cell_thr.currentData() == "manual")
         self.cell_smooth.setEnabled(per_cell and cyto == "cell")
         self.nuc_thr_val.setEnabled(self.nuc_thr.currentData() == "manual")
+        self.cb_fallback.setEnabled(per_cell and self.nuc_thr.currentData() != "manual")
         self.tgt_thr_val.setEnabled(self.tgt_thr.currentData() == "manual")
         self.bg_val.setEnabled(per_cell and self.bg.currentData() == "manual")
 
@@ -591,6 +608,7 @@ class TranslocationPage(QWidget):
         s.ring_width_px = self.ring.value() or None
         s.exclude_saturated = self.cb_sat.isChecked()
         s.segmentation_smoothing_px = self.smooth.value()
+        s.nuclear_threshold_fallback = (_fallback_on(s) or "isodata") if self.cb_fallback.isChecked() else "none"
         s.split_touching = self.cb_split.isChecked()
         s.split_sensitivity = self.split_sens.value()
         s.nucleus_diameter_px = self.diam.value() or None
@@ -641,6 +659,7 @@ class TranslocationPage(QWidget):
         self.ring.setValue(s.ring_width_px or 0)
         self.cb_sat.setChecked(s.exclude_saturated)
         self.smooth.setValue(s.segmentation_smoothing_px or 0)
+        self.cb_fallback.setChecked(bool(_fallback_on(s)))
         self.cb_split.setChecked(s.split_touching)
         self.split_sens.setValue(s.split_sensitivity)
         self.diam.setValue(s.nucleus_diameter_px or 0)

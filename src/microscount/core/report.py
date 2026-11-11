@@ -148,8 +148,12 @@ def _settings_rows(settings) -> list[dict]:
     return [{"setting": k, "value": str(v)} for k, v in settings.to_dict().items()]
 
 
-def write_settings_yaml(path: Path, analysis: str, settings, inputs: list[dict] | None = None) -> Path:
-    """Settings (and optionally the inputs) of one analysis; reopen with ``modules.load_settings``."""
+def write_settings_yaml(path: Path, analysis: str, settings, inputs: list[dict] | None = None,
+                        notes: list[str] | None = None) -> Path:
+    """Settings (and optionally the inputs) of one analysis; reopen with ``modules.load_settings``.
+
+    ``notes`` say what the run decided on its own (for example a fallback threshold); they are not read back.
+    """
     import yaml
 
     from ..modules import analysis as _analysis, module as _module
@@ -164,6 +168,8 @@ def write_settings_yaml(path: Path, analysis: str, settings, inputs: list[dict] 
         "created": _dt.datetime.now().isoformat(timespec="seconds"),
         "settings": settings.to_dict(),
     }
+    if notes:
+        doc["notes"] = list(notes)
     if inputs is not None:
         doc["inputs"] = inputs
     with open(path, "w", encoding="utf-8") as f:

@@ -1,13 +1,14 @@
 import numpy as np
 import pytest
 import tifffile
+import yaml
 from PIL import Image
 from scipy import ndimage as ndi
 
 from microscount.core.imageio import load_image
 from microscount.bio.pairing import pair_files, scan_files
-from microscount.synthetic import translocation_field
-from microscount.bio.translocation import TranslocationSettings, analyse_field, median3x3
+from microscount.synthetic import hazy_translocation_field, translocation_field
+from microscount.bio.translocation import TranslocationSettings, analyse_field, median3x3, nuclear_threshold_check
 from microscount.core.thresholds import compute_threshold
 
 
@@ -226,3 +227,156 @@ def test_leica_export_folder_with_third_channel_and_metadata(tmp_path):
     assert sorted(left) == ["exp_vehicle-1_ch02.tif", "exp_vehicle-2_ch02.tif", "exp_vehicle-3_ch01.tif", "exp_vehicle-3_ch02.tif"]
     assert left["exp_vehicle-1_ch02.tif"].startswith("extra channel") and left["exp_vehicle-3_ch02.tif"].startswith("blank")
     assert left["exp_vehicle-3_ch01.tif"] == ""  # a target without its nuclear file stays unpaired
+
+
+# ---------------------------------------------------------------------- nuclear threshold check and fallback
+
+
+def _hazy_pair(tmp_path, seed=4, ratio=2.0, name="hazy"):
+    """A dim, hazy nuclear stain with bright debris: ImageJ 1.39 Auto settles in the background peak."""
+    n, t, truth = hazy_translocation_field(ratio=ratio, seed=seed)
+    tifffile.imwrite(tmp_path / f"{name}_dapi.tif", n)
+    tifffile.imwrite(tmp_path / f"{name}_gfp.tif", t)
+    return load_image(tmp_path / f"{name}_dapi.tif"), load_image(tmp_path / f"{name}_gfp.tif"), truth
+
+
+def test_nuclear_threshold_check():
+    rng = np.random.default_rng(1)
+    img = 10 + rng.normal(0, 1.0, (200, 200))
+    img[50:90, 50:90] += 20  # one bright square: 4% of the field
+    region = np.ones(img.shape, bool)
+    good = nuclear_threshold_check(img, 20.0, region)
+    assert not good["failed"] and good["mask_fraction"] == pytest.approx(0.04, abs=0.002)
+    assert good["background"] == pytest.approx(10, abs=0.3) and good["noise_sd"] == pytest.approx(1.0, rel=0.2)
+    assert good["snr"] == pytest.approx(10, rel=0.2)
+    noise = nuclear_threshold_check(img, 11.0, region)
+    assert noise["failed"] and "background noise" in noise["reason"]
+    assert nuclear_threshold_check(img, 40.0, region)["reason"] == "finds almost no nuclei"
+    img[:120] += 20  # bright over more than half of the field
+    assert "% of the field in the nuclei" in nuclear_threshold_check(img, 25.0, region)["reason"]
+
+
+@pytest.mark.parametrize("seed", [4, 7])
+def test_failed_nuclear_threshold_falls_back_to_isodata(tmp_path, seed):
+    nuc, tgt, truth = _hazy_pair(tmp_path, seed=seed)
+    off = analyse_field(nuc, tgt, TranslocationSettings(nuclear_threshold_fallback="none"))
+    assert off.summary["nuclear_threshold_failed"] and not off.summary["segmentation_fallback"]
+    assert off.summary["segmentation_snr"] < 1  # ImageJ Auto lies in the background peak
+    assert any(w.startswith("nuclei could not be found reliably") for w in off.warnings)
+    assert abs(off.summary["median_nc"] - 2.0) > 0.5  # and N/C is wrong
+    r = analyse_field(nuc, tgt, TranslocationSettings())  # default: fallback "isodata"
+    assert r.summary["nuclear_threshold_failed"] and r.summary["segmentation_fallback"]
+    assert r.summary["segmentation_method"] == "isodata, smoothing 4 px" and r.summary["segmentation_snr"] > 2.5
+    assert any("nuclei found with 'isodata' on the stain smoothed with 4 px instead" in w for w in r.warnings)
+    assert r.summary["n_cells_analysed"] >= 0.7 * truth["n_cells"]
+    assert r.summary["median_nc"] == pytest.approx(2.0, rel=0.05)
+
+
+def test_fallback_leaves_a_good_threshold_alone(tmp_path):
+    nuc, tgt, _ = _pair(tmp_path, ratio=2.0, seed=5, shape=(512, 512), spacing=56)
+    r = analyse_field(nuc, tgt, TranslocationSettings())
+    off = analyse_field(nuc, tgt, TranslocationSettings(nuclear_threshold_fallback="none"))
+    assert r.summary["nuclear_threshold_failed"] is False and r.summary["segmentation_fallback"] is False
+    assert r.summary["segmentation_method"] == "ij139_auto, smoothing 2 px"
+    assert r.summary["median_nc"] == off.summary["median_nc"] and r.cells == off.cells
+    # as in a run where another field needed the fallback: tried first, and used where it works
+    p = analyse_field(nuc, tgt, TranslocationSettings(), prefer_fallback=True)
+    assert p.summary["segmentation_fallback"] and p.summary["nuclear_threshold_failed"] is None
+    assert p.summary["median_nc"] == pytest.approx(2.0, rel=0.08)
+    # a manual threshold has no fallback; an unknown fallback method is an error
+    s = TranslocationSettings(nuclear_threshold="manual", nuclear_threshold_value=40)
+    assert not analyse_field(nuc, tgt, s, prefer_fallback=True).summary["segmentation_fallback"]
+    with pytest.raises(ValueError, match="nuclear_threshold_fallback"):
+        analyse_field(nuc, tgt, TranslocationSettings(nuclear_threshold_fallback="isodta"))
+
+
+def test_run_measures_every_field_alike_once_one_needs_the_fallback(tmp_path):
+    from microscount.bio.experiment import combine_result_folders, segmentation_methods
+    from microscount.bio.report import run_translocation
+    from microscount.bio.translocation import FieldSpec
+
+    nuc, tgt, _ = _hazy_pair(tmp_path, seed=4)
+    specs = [FieldSpec(str(tmp_path / "hazy_dapi.tif"), str(tmp_path / "hazy_gfp.tif"), "stimulus", "1", "1")]
+    for k in (1, 2):
+        n, t, _ = translocation_field(shape=(512, 512), ratio=1.0, seed=10 + k, spacing=56)
+        tifffile.imwrite(tmp_path / f"c{k}_dapi.tif", n)
+        tifffile.imwrite(tmp_path / f"c{k}_gfp.tif", t)
+        specs.append(FieldSpec(str(tmp_path / f"c{k}_dapi.tif"), str(tmp_path / f"c{k}_gfp.tif"), "vehicle", str(k),
+                               "1"))
+    s = TranslocationSettings(control_condition="vehicle")
+    # the vehicle fields alone keep ImageJ Auto
+    alone = run_translocation(specs[1:], s, tmp_path / "vehicle", save_overlays=False)
+    assert {r.summary["segmentation_method"] for r in alone["results"]} == {"ij139_auto, smoothing 2 px"}
+    assert not alone["experiment"].notes
+    # with the hazy field, every field is found with IsoData
+    res = run_translocation(specs, s, tmp_path / "joint", save_overlays=False)
+    assert not res["errors"]
+    rows = {r.field_id + r.condition: r.summary for r in res["results"]}
+    assert {v["segmentation_method"] for v in rows.values()} == {"isodata, smoothing 4 px"}
+    assert rows["1stimulus"]["nuclear_threshold_failed"] is True
+    assert rows["1vehicle"]["nuclear_threshold_failed"] is False  # its own threshold worked
+    v1 = analyse_field(load_image(specs[1].nuclear_path), load_image(specs[1].target_path), s, prefer_fallback=True)
+    assert rows["1vehicle"]["median_nc"] == v1.summary["median_nc"]
+    note = next(n for n in res["experiment"].notes if n.startswith("Nuclei (boundary 1)"))
+    assert "failed in 1 of 3 fields" in note and "the nuclei of every field were found with 'isodata'" in note
+    doc = yaml.safe_load((tmp_path / "joint" / "settings.yaml").read_text(encoding="utf-8"))
+    assert doc["notes"] == res["experiment"].notes and doc["settings"]["nuclear_threshold_fallback"] == "isodata"
+    assert "segmentation_method" in (tmp_path / "joint" / "per_field.csv").read_text(encoding="utf-8").splitlines()[0]
+    # result folders found with different thresholds are flagged when combined, also folders from before 0.5.2
+    s2 = TranslocationSettings(control_condition="vehicle", nuclear_threshold_fallback="none")
+    run_translocation(specs[:1], s2, tmp_path / "hazy", save_overlays=False)
+    exp, _, _ = combine_result_folders([tmp_path / "vehicle", tmp_path / "joint"], repetitions=["1", "2"])
+    assert any("not all found alike" in n and "isodata, smoothing 4 px (3 fields)" in n for n in exp.notes)
+    f = tmp_path / "hazy" / "per_field.csv"
+    lines = f.read_text(encoding="utf-8").splitlines()
+    k = lines[0].split(",").index("segmentation_method")
+    f.write_text("\n".join(",".join(c for j, c in enumerate(x.split(",")) if j != k) for x in lines), encoding="utf-8")
+    assert segmentation_methods(tmp_path / "hazy", []) == {}
+    assert segmentation_methods(tmp_path / "hazy", [{"method": "per_cell"}]) == {"ij139_auto, smoothing 2 px": 1}
+    exp, _, _ = combine_result_folders([tmp_path / "vehicle", tmp_path / "hazy"], repetitions=["1", "2"])
+    assert not any("not all found alike" in n for n in exp.notes)
+
+
+def test_small_nuclei_are_flagged():
+    from microscount.bio.report import _flag_small_nuclei
+    from microscount.bio.translocation import FieldResult
+
+    def field(i, d):
+        return FieldResult(str(i), "c", "", "", "per_cell", {"nucleus_diameter_px": d}, [], [], repetition="1")
+
+    rs = [field(1, 20.0), field(2, 22.0), field(3, 21.0), field(4, 5.1)]
+    notes = _flag_small_nuclei(rs)
+    assert [bool(r.warnings) for r in rs] == [False, False, False, True]
+    assert "diameter 5.1 px, against a median of 20.5 px" in rs[3].warnings[0]
+    assert len(notes) == 1 and "field 4 of c" in notes[0]
+    assert _flag_small_nuclei([field(1, 20.0), field(2, 5.0)]) == []  # too few fields to tell
+
+
+def test_only_a_field_with_cells_switches_the_run():
+    from microscount.bio.report import _same_nuclei_everywhere
+    from microscount.bio.translocation import FieldResult
+
+    def field(i, cells, fallback, failed):
+        return FieldResult(str(i), "c", "", "", "per_cell", {"n_cells_analysed": cells, "segmentation_method": "x",
+                           "segmentation_fallback": fallback, "nuclear_threshold_failed": failed}, [], [],
+                           repetition="1")
+
+    def never(*a, **k):
+        raise AssertionError("no field should be analysed again")
+
+    # an empty field with a speck of debris, rescued: the other fields keep their own threshold
+    rs = [field(1, 2, True, True), field(2, 700, False, False), field(3, 650, False, False)]
+    notes = _same_nuclei_everywhere(rs, [(None, r.field_id) for r in rs], never, TranslocationSettings(), [])
+    assert len(notes) == 1 and "too few cells" in notes[0] and "field 1 of c" in notes[0]
+    # a field of cells, rescued: the others are analysed again with the fallback first
+    calls = []
+
+    def again(spec, fid, prefer_fallback=False):
+        calls.append((fid, prefer_fallback))
+        return field(fid, 690, True, None)
+
+    rs = [field(1, 400, True, True), field(2, 700, False, False), field(3, 650, False, False)]
+    notes = _same_nuclei_everywhere(rs, [(None, r.field_id) for r in rs], again, TranslocationSettings(), [])
+    assert calls == [("2", True), ("3", True)]
+    assert rs[1].summary["segmentation_fallback"] and rs[1].summary["nuclear_threshold_failed"] is False
+    assert len(notes) == 1 and "failed in 1 of 3 fields" in notes[0] and "the nuclei of every field" in notes[0]

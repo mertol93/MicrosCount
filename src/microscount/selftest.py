@@ -29,7 +29,7 @@ def run(report: str | Path | None = None) -> bool:
         from .materials.porosity import PorositySettings, analyse_sem
         from .bio.report import run_translocation
         from .materials.report import run_porosity
-        from .synthetic import sem_image, translocation_field
+        from .synthetic import hazy_translocation_field, sem_image, translocation_field
         from .core.imagej import subtract_background
         from .core.thresholds import ij_default
         from .bio.translocation import FieldSpec, TranslocationSettings, analyse_field
@@ -67,6 +67,14 @@ def run(report: str | Path | None = None) -> bool:
                   f"median {med:.3f}, truth {truth['ratio']:.3f}, cells {r.summary['n_cells_analysed']}")
             ball = subtract_background(np.tile(np.arange(64, dtype=np.uint8), (64, 1)), 10)
             check("rolling-ball background removes a ramp", int(ball.max()) <= 1, f"max after subtraction {ball.max()}")
+            hn, ht, _ = hazy_translocation_field(ratio=2.0)
+            tifffile.imwrite(d / "h_dapi.tif", hn)
+            tifffile.imwrite(d / "h_gfp.tif", ht)
+            h = analyse_field(load_image(d / "h_dapi.tif"), load_image(d / "h_gfp.tif"), TranslocationSettings(),
+                              "hazy", "test")
+            check("failed nuclear threshold: nuclei found with the fallback", h.summary["segmentation_fallback"] and
+                  abs(h.summary["median_nc"] - 2.0) / 2.0 < 0.10,
+                  f"{h.summary['segmentation_method']}, median N/C {h.summary['median_nc']:.3f}, truth 2.000")
             p = analyse_field(nuc, tgt, TranslocationSettings.paper(), "synthetic", "test")
             check("paper method runs", np.isfinite(p.summary["paper_ratio"]), f"R = {p.summary['paper_ratio']:.3f}")
 

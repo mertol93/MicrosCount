@@ -76,6 +76,26 @@ def translocation_field(
     )
 
 
+def hazy_translocation_field(ratio: float = 2.0, seed: int = 4, shape=(512, 512)):
+    """A field whose nuclear stain defeats ImageJ 1.39 *Auto*: dim, hazy and with bright debris.
+
+    As ``translocation_field``, but the nuclei are only 7 grey levels above the background of the stain, which also
+    reaches into the cytoplasm (1 grey level) and lies under an uneven haze (up to 3 grey levels); three saturated
+    7 x 7 px specks stretch its 8-bit histogram. *Auto* then settles in the background peak.
+    """
+    n, t, truth = translocation_field(shape=shape, ratio=ratio, nuclear_stain=10, background=3.0, noise=1.0,
+                                      spacing=56, seed=seed)
+    rng = np.random.default_rng(2)
+    f = n.astype(np.float64)
+    f[(t > 20) & (f < 10)] += 1.0
+    low = ndi.gaussian_filter(rng.normal(size=f.shape), 40)
+    f += 3.0 * (low - low.min()) / (low.max() - low.min())
+    for _ in range(3):
+        y, x = rng.integers(20, min(shape) - 22, 2)
+        f[y:y + 7, x:x + 7] = 255
+    return np.clip(np.round(f), 0, 255).astype(np.uint8), t, truth
+
+
 def sem_image(shape=(300, 400), porosity: float = 0.15, seed: int = 0):
     """Grey SEM-like image: bright textured solid with dark round pores."""
     rng = np.random.default_rng(seed)
